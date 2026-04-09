@@ -145,6 +145,24 @@ public with sharing class TriggerHandlerTest {
   }
 
   @isTest
+  static void testGetUpdatedIdsWithChangedFiled_WhenFieldChanged_ThenReturnIds() {
+    // Arrange
+    Account oldAccount = new Account(Id = '001000000000001', Name = 'Old Name');
+    Account newAccount = new Account(Id = '001000000000001', Name = 'New Name');
+
+    TestTriggerHandler handler = new TestTriggerHandler();
+    handler.newRecords = new List<SObject>{ newAccount };
+    handler.oldRecordsMap = new Map<Id, SObject>{ oldAccount.Id => oldAccount };
+
+    // Act
+    Set<Id> changedIds = handler.getUpdateRecordIdsWithChangedField(Account.Name);
+
+    // Assert
+    Assert.areEqual(1, changedIds.size());
+    Assert.isTrue(changedIds.contains(newAccount.Id));
+  }
+
+  @isTest
   static void testGetUpdatedRecordsWithChangedFiled_WhenFieldNotChanged_ThenReturnEmpty() {
     // Arrange
     Account oldAccount = new Account(Id = '001000000000001', Name = 'Same Name');
@@ -158,5 +176,21 @@ public with sharing class TriggerHandlerTest {
 
     // Assert
     Assert.areEqual(0, changedRecords.size());
+  }
+
+  @isTest
+  static void testGetUpdatedIdsWithChangedFiled_WhenFieldNotChanged_ThenReturnEmpty() {
+    // Arrange
+    Account oldAccount = new Account(Id = '001000000000001', Name = 'Same Name');
+    Account newAccount = new Account(Id = '001000000000001', Name = 'Same Name');
+    TestTriggerHandler handler = new TestTriggerHandler();
+    handler.newRecords = new List<SObject>{ newAccount };
+    handler.oldRecordsMap = new Map<Id, SObject>{ oldAccount.Id => oldAccount };
+
+    // Act
+    Set<Id> changedIds = handler.getUpdateRecordIdsWithChangedField(Account.Name);
+
+    // Assert
+    Assert.areEqual(0, changedIds.size());
   }
 }
