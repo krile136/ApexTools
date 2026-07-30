@@ -5,6 +5,16 @@ public with sharing class HttpRequestHandler implements IHttpRequestHandler {
     this.currentHttpResponse = null;
   }
 
+  /**
+   * @description No-op in production — labels only route responses in MockHttpRequestHandler.
+   *
+   * @param label The label naming the purpose of the next send().
+   * @return This handler.
+   */
+  public IHttpRequestHandler label(String label) {
+    return this;
+  }
+
   public void send(HttpRequest request) {
     Http http = new Http();
     HttpResponse response = http.send(request);

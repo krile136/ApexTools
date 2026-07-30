@@ -47,4 +47,16 @@ public with sharing class HttpRequestHandlerTest {
       return this.response;
     }
   }
+
+  @IsTest
+  static void testLabel_WhenCalled_ThenNoOpAndReturnsSelf() {
+    // Arrange
+    HttpRequestHandler handler = new HttpRequestHandler();
+
+    // Act
+    IHttpRequestHandler returned = handler.label('anything');
+
+    // Assert - 本番実装では label は no-op で自身を返す
+    Assert.areEqual(handler, returned);
+  }
 }

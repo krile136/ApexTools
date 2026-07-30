@@ -23,28 +23,14 @@ public with sharing class TriggerOppHandler extends TriggerHandler {
 
 ## MockHttpRequestHandler
 
-Two complementary modes:
-
-### Ordered mode — for retry / pagination tests
-
-Responses are consumed positionally, one per `send()`:
+Responses are declared as `MockResponse` rules and consumed as a **FIFO queue per HTTP method** — tests do not depend on the interleaving order of different callout kinds, while retries of the same method still consume in declared order:
 
 ```apex
-MockHttpRequestHandler mock = new MockHttpRequestHandler(new List<Map<String, Object>>{
-  new Map<String, Object>{ 'body' => '{"status":"pending"}', 'statusCode' => 202 },
-  new Map<String, Object>{ 'body' => '{"status":"done"}', 'statusCode' => 200 }
+MockHttpRequestHandler mock = new MockHttpRequestHandler(new List<MockResponse>{
+  MockResponse.of('GET').respond('{"message":"not found"}', 404),   // 1st GET
+  MockResponse.of('GET').respond(foundBody, 200),                   // 2nd GET
+  MockResponse.of('POST').respond(createdMap, 200)                  // any POST (Map is JSON-serialized)
 });
-```
-
-### Matching mode — for multi-callout flows
-
-Responses are selected by request matching, regardless of call order. Matchers are evaluated in registration order (first match wins) and non-matching requests fall back to the ordered queue:
-
-```apex
-MockHttpRequestHandler mock = new MockHttpRequestHandler()
-  .when().method('GET').endpointContains('/records.json').respond(existsBody, 200)
-  .when().method('POST').respond(createdBody, 200)
-  .when().method('PUT').respond('{"message":"bad request"}', 400);
 
 new KintoneUpsertUsecase(input, mock).invoke();
 
@@ -52,8 +38,27 @@ Assert.areEqual(1, mock.countByMethod('POST'));   // verification helpers
 Assert.areEqual(0, mock.countByMethod('PUT'));
 ```
 
-- Criteria: `method()` / `endpointContains()` / `endpointEquals()` / `bodyContains()` — AND-combined
-- A matched response is **sticky** (returned every time). Chain `.thenRespond(...)` for a per-matcher sequence whose last response sticks (e.g. GET → 404 first, then 200)
-- Conditions the builder cannot express: implement `IRequestMatcher` and pass it to `when(matcher)`
-- Verification helpers over `sentRequests`: `countByMethod(method)` / `requestsTo(endpointPart)` / `lastRequest()`
-- When no response is available, the error lists the actual request, all registered matchers, and the queue state — no more guessing why `No more responses configured` happened
+- `MockResponse.of(method)` is case-insensitive (`'GET'` / `'get'` both work); `respond()` accepts `String` / `Map<String, Object>` / `List<Object>` bodies
+- **A response is consumed once.** When a method's queue is exhausted, `send()` fails with a detailed error (actual request + every queue's state) — call overruns are caught, not hidden
+- `.repeat()` on the **last** response of a method makes it answer every further request (e.g. retry tests: fail once, then always succeed)
+
+### Labels — multiple callout sites in one usecase
+
+When one usecase talks to multiple endpoints/APIs, name each callout site with a label (mirroring `MockEloquent`). Production `HttpRequestHandler` ignores labels; the mock routes by them:
+
+```apex
+// usecase:
+this.http.label(LBL_EXISTS).send(req);
+
+// test:
+MockHttpRequestHandler mock = new MockHttpRequestHandler()
+  .attach(LBL_EXISTS, MockResponse.of('GET').respond(notFound, 404))
+  .attach(LBL_CREATE, MockResponse.of('POST').respond(created, 200));
+
+Assert.areEqual(1, mock.sentRequestsAt(LBL_CREATE).size());
+```
+
+- Once `attach()` is used, every `send()` must be preceded by `label()` (consumed per send). A typo'd label fails with the registered-label list
+- Declared method vs actual request mismatches surface as errors (branch-bug detection): a `GET` arriving at a label that only declares `POST` fails loudly
+- Without `attach()`, `label()` calls are ignored — labeled production code still works with a plain constructor mock
+- Verification helpers over `sentRequests`: `countByMethod()` / `requestsTo(endpointPart)` / `sentRequestsAt(label)` / `lastRequest()`

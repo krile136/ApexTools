@@ -1,128 +1,135 @@
 /**
- * @description Test double for IHttpRequestHandler with two complementary modes:
+ * @description Test double for IHttpRequestHandler.
  *
- * 1. Ordered mode (original): responses passed to a constructor are consumed
- *    positionally, one per send(). Best for retry / pagination tests where the
- *    call order itself is the subject.
- * 2. Matching mode: responses registered via when() are returned whenever the
- *    request matches, regardless of order. Best for multi-callout flows
- *    (e.g. GET existence check, then POST or PUT) where the branch taken is
- *    the subject, not the call order.
- *
- * Resolution is hybrid: matchers are evaluated first (in registration order,
- * first match wins), and non-matching requests fall back to the ordered queue.
- * A matched response is sticky (returned every time); use thenRespond() to
- * define a per-matcher sequence whose last response sticks.
+ * Responses are declared as MockResponse rules and consumed as a FIFO queue
+ * **per HTTP method**, so tests do not depend on the interleaving order of
+ * different callout kinds (e.g. GET existence check, then POST or PUT),
+ * while retries of the same method still consume in declared order.
  *
  * <pre>
- * MockHttpRequestHandler mock = new MockHttpRequestHandler()
- *   .when().method('GET').endpointContains('/records.json').respond(existsBody, 200)
- *   .when().method('POST').respond(createdBody, 200)
- *   .when().method('PUT').respond('{"message":"bad request"}', 400);
- *
- * new KintoneUpsertUsecase(input, mock).invoke();
- *
- * Assert.areEqual(1, mock.countByMethod('POST'));
- * Assert.areEqual(0, mock.countByMethod('PUT'));
+ * MockHttpRequestHandler mock = new MockHttpRequestHandler(new List&lt;MockResponse&gt;{
+ *   MockResponse.of('GET').respond('{"message":"not found"}', 404),
+ *   MockResponse.of('GET').respond(foundBody, 200),
+ *   MockResponse.of('POST').respond(createdBody, 200)
+ * });
  * </pre>
+ *
+ * A response is consumed once; when a method's queue is exhausted the next
+ * send() fails with a detailed error (call overruns are caught, not hidden).
+ * Declare `.repeat()` on the last response of a method to make it answer
+ * every further request instead.
+ *
+ * When one usecase talks to multiple endpoints/APIs, split the callout sites
+ * by label (mirroring MockEloquent):
+ *
+ * <pre>
+ * // usecase:  this.http.label(LBL_EXISTS).send(req);
+ * MockHttpRequestHandler mock = new MockHttpRequestHandler()
+ *   .attach(LBL_EXISTS, MockResponse.of('GET').respond(notFound, 404))
+ *   .attach(LBL_CREATE, MockResponse.of('POST').respond(created, 200));
+ * </pre>
+ *
+ * Once attach() is used, every send() must be preceded by label() (the label
+ * is consumed per send). Without attach(), label() calls are ignored, so
+ * labeled production code can still be tested with a plain constructor mock.
  */
 public with sharing class MockHttpRequestHandler implements IHttpRequestHandler {
   @TestVisible
   private List<HttpRequest> sentRequests = new List<HttpRequest>();
-  @TestVisible
-  private List<MockResponse> mockResponses = new List<MockResponse>();
-  @TestVisible
-  private List<MatcherEntry> matcherEntries = new List<MatcherEntry>();
+  private List<String> sentLabels = new List<String>();
+
+  private Map<String, ResponseQueue> defaultQueues = new Map<String, ResponseQueue>();
+  private Map<String, Map<String, ResponseQueue>> labelToQueues = new Map<String, Map<String, ResponseQueue>>();
 
   private MockResponse currentMockResponse;
-  private Integer orderedConsumedCount = 0;
+  private String pendingLabel;
 
   /**
-   * @description Creates an empty handler for matching mode. Register responses with when().
+   * @description Creates an empty handler. Register responses with attach() (label mode).
    */
   public MockHttpRequestHandler() {
     this.currentMockResponse = null;
   }
 
-  public MockHttpRequestHandler(Map<String, Object> responseData) {
-    if (responseData == null) {
-      throw new IllegalArgumentException('Response data cannot be null');
-    }
-    MockResponse mockResponse = new MockResponse(responseData);
-    this.mockResponses.add(mockResponse);
+  /**
+   * @description Creates a handler with a single response rule.
+   *
+   * @param response The mocked response.
+   */
+  public MockHttpRequestHandler(MockResponse response) {
+    this.register(this.defaultQueues, response);
     this.currentMockResponse = null;
   }
 
-  public MockHttpRequestHandler(List<Map<String, Object>> responseDataList) {
-    if (responseDataList == null || responseDataList.isEmpty()) {
-      throw new IllegalArgumentException('Response data list cannot be null or empty');
+  /**
+   * @description Creates a handler with multiple response rules, consumed as a
+   * FIFO queue per HTTP method.
+   *
+   * @param responses The mocked responses.
+   */
+  public MockHttpRequestHandler(List<MockResponse> responses) {
+    if (responses == null || responses.isEmpty()) {
+      throw new IllegalArgumentException('Responses cannot be null or empty');
     }
-    for (Map<String, Object> responseData : responseDataList) {
-      MockResponse mockResponse = new MockResponse(responseData);
-      this.mockResponses.add(mockResponse);
+    for (MockResponse response : responses) {
+      this.register(this.defaultQueues, response);
     }
-    this.currentMockResponse = null;
-  }
-
-  public MockHttpRequestHandler(String body, Integer statusCode) {
-    Map<String, Object> responseData = new Map<String, Object>{ 'body' => body, 'statusCode' => statusCode };
-    MockResponse mockResponse = new MockResponse(responseData);
-    this.mockResponses.add(mockResponse);
     this.currentMockResponse = null;
   }
 
   // =================================================================================
-  // Matching DSL
+  // Label mode (mirrors MockEloquent attach / label)
   // =================================================================================
 
   /**
-   * @description Starts a request matcher definition. Chain criteria (method /
-   * endpointContains / endpointEquals / bodyContains, AND-combined) and finish
-   * with respond() to register.
+   * @description Attaches a response rule under a label. Once attach() is used,
+   * every send() must be routed with label().
    *
-   * @return A RequestCriteria builder.
-   */
-  public RequestCriteria when() {
-    return new RequestCriteria(this, null);
-  }
-
-  /**
-   * @description Starts a request matcher definition seeded with a custom predicate.
-   * Criteria chained afterwards are AND-combined with the predicate.
-   *
-   * @param matcher A custom IRequestMatcher implementation.
-   * @return A RequestCriteria builder.
-   */
-  public RequestCriteria when(IRequestMatcher matcher) {
-    if (matcher == null) {
-      throw new IllegalArgumentException('Matcher cannot be null');
-    }
-    return new RequestCriteria(this, matcher);
-  }
-
-  /**
-   * @description Appends a follow-up response to the most recently registered matcher,
-   * forming a per-matcher sequence. The last response of the sequence is sticky.
-   *
-   * @param body The response body.
-   * @param statusCode The response status code.
+   * @param label The label naming a callout site.
+   * @param response The mocked response.
    * @return This handler (for chaining).
    */
-  public MockHttpRequestHandler thenRespond(String body, Integer statusCode) {
-    return this.thenRespond(new Map<String, Object>{ 'body' => body, 'statusCode' => statusCode });
+  public MockHttpRequestHandler attach(String label, MockResponse response) {
+    return this.attach(label, new List<MockResponse>{ response });
   }
 
   /**
-   * @description Appends a follow-up response (Map form) to the most recently registered matcher.
+   * @description Attaches multiple response rules under a label.
    *
-   * @param responseData A map containing 'body' and 'statusCode'.
+   * @param label The label naming a callout site.
+   * @param responses The mocked responses.
    * @return This handler (for chaining).
    */
-  public MockHttpRequestHandler thenRespond(Map<String, Object> responseData) {
-    if (this.matcherEntries.isEmpty()) {
-      throw new IllegalArgumentException('thenRespond() requires a preceding when(...).respond(...)');
+  public MockHttpRequestHandler attach(String label, List<MockResponse> responses) {
+    if (String.isBlank(label)) {
+      throw new IllegalArgumentException('Label cannot be blank');
     }
-    this.matcherEntries[this.matcherEntries.size() - 1].responses.add(new MockResponse(responseData));
+    if (responses == null || responses.isEmpty()) {
+      throw new IllegalArgumentException('Responses cannot be null or empty');
+    }
+    if (!this.defaultQueues.isEmpty()) {
+      throw new IllegalArgumentException(
+        'Cannot mix attach() with constructor responses. Use either the constructor (single callout site) or attach() with labels (multiple callout sites).'
+      );
+    }
+    if (!this.labelToQueues.containsKey(label)) {
+      this.labelToQueues.put(label, new Map<String, ResponseQueue>());
+    }
+    for (MockResponse response : responses) {
+      this.register(this.labelToQueues.get(label), response);
+    }
+    return this;
+  }
+
+  /**
+   * @description Routes the next send() to the responses attached under the label.
+   * Ignored when no attach() was used (plain constructor mode).
+   *
+   * @param label The label naming the purpose of the next send().
+   * @return This handler.
+   */
+  public IHttpRequestHandler label(String label) {
+    this.pendingLabel = label;
     return this;
   }
 
@@ -131,35 +138,52 @@ public with sharing class MockHttpRequestHandler implements IHttpRequestHandler 
   // =================================================================================
 
   public void send(HttpRequest request) {
-    // Matchers first, in registration order (first match wins).
-    for (MatcherEntry entry : this.matcherEntries) {
-      if (entry.criteria.isMatch(request)) {
-        this.sentRequests.add(request);
-        this.currentMockResponse = entry.nextResponse();
-        return;
+    String consumedLabel = this.pendingLabel;
+    this.pendingLabel = null;
+
+    Map<String, ResponseQueue> scope;
+    if (!this.labelToQueues.isEmpty()) {
+      if (consumedLabel == null) {
+        throw new CalloutException(
+          'attach() responses are label-scoped, but send() was called without label().\n' +
+            'Call handler.label(\'<label>\').send(request). Registered labels: ' +
+            String.join(new List<String>(this.labelToQueues.keySet()), ', ')
+        );
       }
+      scope = this.labelToQueues.get(consumedLabel);
+      if (scope == null) {
+        throw new CalloutException(
+          this.buildNoResponseMessage(request, consumedLabel, new Map<String, ResponseQueue>())
+        );
+      }
+    } else {
+      consumedLabel = null;
+      scope = this.defaultQueues;
     }
-    // Fallback: the ordered queue (original behavior).
-    if (this.orderedConsumedCount >= this.mockResponses.size()) {
-      throw new CalloutException(this.buildNoResponseMessage(request));
+
+    String method = request.getMethod() == null ? null : request.getMethod().toLowerCase();
+    ResponseQueue queue = scope.get(method);
+    if (queue == null || queue.isExhausted()) {
+      throw new CalloutException(this.buildNoResponseMessage(request, consumedLabel, scope));
     }
+
     this.sentRequests.add(request);
-    this.currentMockResponse = this.mockResponses[this.orderedConsumedCount];
-    this.orderedConsumedCount++;
+    this.sentLabels.add(consumedLabel);
+    this.currentMockResponse = queue.next();
   }
 
   public String getBody() {
     if (this.currentMockResponse == null) {
       throw new JSONException('No response available. Ensure send() has been called.');
     }
-    return this.currentMockResponse.body;
+    return this.currentMockResponse.getBody();
   }
 
   public Integer getStatusCode() {
     if (this.currentMockResponse == null) {
       throw new JSONException('No response available. Ensure send() has been called.');
     }
-    return this.currentMockResponse.statusCode;
+    return this.currentMockResponse.getStatusCode();
   }
 
   // =================================================================================
@@ -199,6 +223,22 @@ public with sharing class MockHttpRequestHandler implements IHttpRequestHandler 
   }
 
   /**
+   * @description Returns the requests sent under the given label, in send order.
+   *
+   * @param label The label to filter by.
+   * @return The matching requests.
+   */
+  public List<HttpRequest> sentRequestsAt(String label) {
+    List<HttpRequest> matched = new List<HttpRequest>();
+    for (Integer i = 0; i < this.sentRequests.size(); i++) {
+      if (this.sentLabels[i] == label) {
+        matched.add(this.sentRequests[i]);
+      }
+    }
+    return matched;
+  }
+
+  /**
    * @description Returns the most recently sent request, or null if none was sent.
    *
    * @return The last HttpRequest, or null.
@@ -215,26 +255,57 @@ public with sharing class MockHttpRequestHandler implements IHttpRequestHandler 
   // =================================================================================
 
   /**
+   * @description Registers a response into the method-keyed queue map of a scope.
+   *
+   * @param scope The queue map (default or per-label).
+   * @param response The response to register.
+   */
+  private void register(Map<String, ResponseQueue> scope, MockResponse response) {
+    if (response == null) {
+      throw new IllegalArgumentException('Response cannot be null');
+    }
+    if (!response.isConfigured()) {
+      throw new IllegalArgumentException(
+        'MockResponse for method \'' + response.getMethod() + '\' has no content. Call respond(...) before registering.'
+      );
+    }
+    if (!scope.containsKey(response.getMethod())) {
+      scope.put(response.getMethod(), new ResponseQueue());
+    }
+    scope.get(response.getMethod()).add(response);
+  }
+
+  /**
    * @description Builds the detailed no-response error: the actual request, the
-   * registered matchers, and the ordered queue consumption state.
+   * label (when routed), and every queue's consumption state.
    *
    * @param request The request that could not be answered.
+   * @param label The consumed label, or null in constructor mode.
+   * @param scope The queue map that was searched.
    * @return The composed error message.
    */
-  private String buildNoResponseMessage(HttpRequest request) {
+  private String buildNoResponseMessage(HttpRequest request, String label, Map<String, ResponseQueue> scope) {
     List<String> lines = new List<String>();
-    lines.add('No more responses configured, but send() was called.');
-    lines.add('Request: ' + request.getMethod() + ' ' + request.getEndpoint());
-    if (this.matcherEntries.isEmpty()) {
-      lines.add('Registered matchers: none');
-    } else {
-      List<String> descriptions = new List<String>();
-      for (MatcherEntry entry : this.matcherEntries) {
-        descriptions.add('[' + entry.criteria.describe() + ']');
+    lines.add('No mock response available for: ' + request.getMethod() + ' ' + request.getEndpoint());
+    if (label != null) {
+      if (this.labelToQueues.containsKey(label)) {
+        lines.add('Label: \'' + label + '\'');
+      } else {
+        lines.add(
+          'Label: \'' + label + '\' has no attached responses. Registered labels: ' +
+            String.join(new List<String>(this.labelToQueues.keySet()), ', ')
+        );
       }
-      lines.add('Registered matchers (no match): ' + String.join(descriptions, ', '));
     }
-    lines.add('Ordered responses: ' + this.orderedConsumedCount + ' of ' + this.mockResponses.size() + ' consumed');
+    if (scope.isEmpty()) {
+      lines.add('Queues: none');
+    } else {
+      List<String> states = new List<String>();
+      for (String method : scope.keySet()) {
+        states.add('[' + method + ': ' + scope.get(method).describe() + ']');
+      }
+      lines.add('Queues: ' + String.join(states, ', '));
+    }
     return String.join(lines, '\n');
   }
 
@@ -243,223 +314,38 @@ public with sharing class MockHttpRequestHandler implements IHttpRequestHandler 
   // =================================================================================
 
   /**
-   * @description Criteria builder returned by when(). All chained criteria are
-   * AND-combined; respond() registers the matcher and returns the handler.
+   * @description FIFO queue of responses for one HTTP method. A repeat() response
+   * pins the pointer, answering every further request of the method.
    */
-  public class RequestCriteria {
-    private MockHttpRequestHandler parent;
-    private IRequestMatcher customMatcher;
-    private String methodValue;
-    private String endpointContainsValue;
-    private String endpointEqualsValue;
-    private String bodyContainsValue;
+  private class ResponseQueue {
+    private List<MockResponse> responses = new List<MockResponse>();
+    private Integer pointer = 0;
 
-    private RequestCriteria(MockHttpRequestHandler parent, IRequestMatcher customMatcher) {
-      this.parent = parent;
-      this.customMatcher = customMatcher;
+    public void add(MockResponse response) {
+      if (!this.responses.isEmpty() && this.responses[this.responses.size() - 1].isRepeating()) {
+        throw new IllegalArgumentException(
+          'A repeat() response must be the last one declared for its method (\'' + response.getMethod() + '\').'
+        );
+      }
+      this.responses.add(response);
     }
 
-    /**
-     * @description Matches on the HTTP method (case-insensitive).
-     *
-     * @param method The HTTP method (e.g. 'POST').
-     * @return This builder (for chaining).
-     */
-    public RequestCriteria method(String method) {
-      if (String.isBlank(method)) {
-        throw new IllegalArgumentException('method cannot be blank');
-      }
-      this.methodValue = method;
-      return this;
+    public Boolean isExhausted() {
+      return this.pointer >= this.responses.size();
     }
 
-    /**
-     * @description Matches when the endpoint contains the given fragment.
-     *
-     * @param endpointPart The endpoint fragment.
-     * @return This builder (for chaining).
-     */
-    public RequestCriteria endpointContains(String endpointPart) {
-      if (String.isBlank(endpointPart)) {
-        throw new IllegalArgumentException('endpointPart cannot be blank');
-      }
-      this.endpointContainsValue = endpointPart;
-      return this;
-    }
-
-    /**
-     * @description Matches when the endpoint equals the given value exactly.
-     *
-     * @param endpoint The full endpoint.
-     * @return This builder (for chaining).
-     */
-    public RequestCriteria endpointEquals(String endpoint) {
-      if (String.isBlank(endpoint)) {
-        throw new IllegalArgumentException('endpoint cannot be blank');
-      }
-      this.endpointEqualsValue = endpoint;
-      return this;
-    }
-
-    /**
-     * @description Matches when the request body contains the given fragment.
-     *
-     * @param bodyPart The body fragment.
-     * @return This builder (for chaining).
-     */
-    public RequestCriteria bodyContains(String bodyPart) {
-      if (String.isBlank(bodyPart)) {
-        throw new IllegalArgumentException('bodyPart cannot be blank');
-      }
-      this.bodyContainsValue = bodyPart;
-      return this;
-    }
-
-    /**
-     * @description Registers this matcher with a sticky response and returns the handler.
-     *
-     * @param body The response body.
-     * @param statusCode The response status code.
-     * @return The parent handler (for chaining further when() calls).
-     */
-    public MockHttpRequestHandler respond(String body, Integer statusCode) {
-      return this.respond(new Map<String, Object>{ 'body' => body, 'statusCode' => statusCode });
-    }
-
-    /**
-     * @description Registers this matcher with a sticky response (Map form) and returns the handler.
-     *
-     * @param responseData A map containing 'body' and 'statusCode'.
-     * @return The parent handler (for chaining further when() calls).
-     */
-    public MockHttpRequestHandler respond(Map<String, Object> responseData) {
-      if (
-        this.customMatcher == null &&
-        this.methodValue == null &&
-        this.endpointContainsValue == null &&
-        this.endpointEqualsValue == null &&
-        this.bodyContainsValue == null
-      ) {
-        throw new IllegalArgumentException('when() requires at least one condition before respond()');
-      }
-      MatcherEntry entry = new MatcherEntry();
-      entry.criteria = this;
-      entry.responses.add(new MockResponse(responseData));
-      this.parent.matcherEntries.add(entry);
-      return this.parent;
-    }
-
-    /**
-     * @description Evaluates all criteria (AND) against a request.
-     *
-     * @param request The request to evaluate.
-     * @return True when every criterion matches.
-     */
-    private Boolean isMatch(HttpRequest request) {
-      if (
-        this.methodValue != null &&
-        (request.getMethod() == null || !request.getMethod().equalsIgnoreCase(this.methodValue))
-      ) {
-        return false;
-      }
-      if (this.endpointEqualsValue != null && request.getEndpoint() != this.endpointEqualsValue) {
-        return false;
-      }
-      if (
-        this.endpointContainsValue != null &&
-        (request.getEndpoint() == null || !request.getEndpoint().contains(this.endpointContainsValue))
-      ) {
-        return false;
-      }
-      if (
-        this.bodyContainsValue != null &&
-        (request.getBody() == null || !request.getBody().contains(this.bodyContainsValue))
-      ) {
-        return false;
-      }
-      if (this.customMatcher != null && !this.customMatcher.matches(request)) {
-        return false;
-      }
-      return true;
-    }
-
-    /**
-     * @description Human-readable summary of the criteria (used in error messages).
-     *
-     * @return The criteria summary.
-     */
-    private String describe() {
-      List<String> parts = new List<String>();
-      if (this.methodValue != null) {
-        parts.add('method=' + this.methodValue);
-      }
-      if (this.endpointEqualsValue != null) {
-        parts.add('endpointEquals=' + this.endpointEqualsValue);
-      }
-      if (this.endpointContainsValue != null) {
-        parts.add('endpointContains=' + this.endpointContainsValue);
-      }
-      if (this.bodyContainsValue != null) {
-        parts.add('bodyContains=' + this.bodyContainsValue);
-      }
-      if (this.customMatcher != null) {
-        parts.add('custom matcher');
-      }
-      return String.join(parts, ' AND ');
-    }
-  }
-
-  /**
-   * @description A registered matcher with its response sequence. The pointer
-   * advances per match and sticks at the last response.
-   */
-  @TestVisible
-  private class MatcherEntry {
-    public RequestCriteria criteria;
-    public List<MockResponse> responses = new List<MockResponse>();
-    private Integer responsePointer = 0;
-
-    public MockResponse nextResponse() {
-      MockResponse response = this.responses[this.responsePointer];
-      if (this.responsePointer < this.responses.size() - 1) {
-        this.responsePointer++;
+    public MockResponse next() {
+      MockResponse response = this.responses[this.pointer];
+      if (!response.isRepeating()) {
+        this.pointer++;
       }
       return response;
     }
-  }
 
-  @TestVisible
-  private class MockResponse {
-    public String body;
-    public Integer statusCode;
-
-    public MockResponse(Map<String, Object> responseData) {
-      if (responseData == null) {
-        throw new IllegalArgumentException('Response data cannot be null');
-      }
-      if (responseData.get('body') == null || responseData.get('statusCode') == null) {
-        throw new IllegalArgumentException('Response data must contain body and statusCode');
-      }
-
-      Object bodyData = responseData.get('body');
-      if (responseData.get('body') instanceof Map<String, Object>) {
-        this.body = JSON.serialize((Map<String, Object>) bodyData);
-      } else if (responseData.get('body') instanceof List<Object>) {
-        this.body = JSON.serialize((List<Object>) bodyData);
-      } else if (responseData.get('body') instanceof String) {
-        this.body = (String) bodyData;
-      } else {
-        throw new IllegalArgumentException('Body must be a Map, List, or String');
-      }
-
-      Object sc = responseData.get('statusCode');
-      if (sc instanceof Integer) {
-        this.statusCode = (Integer) sc;
-      } else if (sc instanceof String) {
-        this.statusCode = Integer.valueOf((String) sc);
-      } else {
-        throw new IllegalArgumentException('StatusCode must be an Integer or String');
-      }
+    public String describe() {
+      Boolean endsRepeating = !this.responses.isEmpty() &&
+        this.responses[this.responses.size() - 1].isRepeating();
+      return this.pointer + ' of ' + this.responses.size() + ' consumed' + (endsRepeating ? ' (last repeats)' : '');
     }
   }
 }
