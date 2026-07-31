@@ -56,7 +56,7 @@ public with sharing class HttpRequestHandlerTest {
     // Act
     IHttpRequestHandler returned = handler.label('anything');
 
-    // Assert - 本番実装では label は no-op で自身を返す
+    // Assert - in production, label() is a no-op returning the same instance
     Assert.areEqual(handler, returned);
   }
 
