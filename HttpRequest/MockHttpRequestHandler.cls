@@ -1,45 +1,49 @@
 /**
- * @description Test double for IHttpRequestHandler.
+ * @description Test double for IHttpRequestHandler with two modes:
  *
- * Responses are declared as MockResponse rules and consumed as a FIFO queue
- * **per HTTP method**, so tests do not depend on the interleaving order of
- * different callout kinds (e.g. GET existence check, then POST or PUT),
- * while retries of the same method still consume in declared order.
+ * 1. Script mode (no labels): the constructor list is the flow's script,
+ *    consumed strictly in order — reading it top to bottom IS the expected
+ *    callout sequence. Each MockResponse declares the HTTP method it expects,
+ *    and a request that does not match the next queued response fails with a
+ *    detailed error (no silent wrong-response delivery).
  *
  * <pre>
  * MockHttpRequestHandler mock = new MockHttpRequestHandler(new List&lt;MockResponse&gt;{
- *   MockResponse.of('GET').respond('{"message":"not found"}', 404),
- *   MockResponse.of('GET').respond(foundBody, 200),
- *   MockResponse.of('POST').respond(createdBody, 200)
+ *   MockResponse.of('GET').respond('{"message":"not found"}', 404),   // 1st callout
+ *   MockResponse.of('POST').respond(createdBody, 201),                // 2nd callout
+ *   MockResponse.of('GET').respond(foundBody, 200)                    // 3rd callout
  * });
  * </pre>
  *
- * A response is consumed once; when a method's queue is exhausted the next
- * send() fails with a detailed error (call overruns are caught, not hidden).
- * Declare `.repeat()` on the last response of a method to make it answer
- * every further request instead.
- *
- * When one usecase talks to multiple endpoints/APIs, split the callout sites
- * by label (mirroring MockEloquent):
+ * 2. Label mode: each callout site gets its own named queue (mirroring
+ *    MockEloquent's attach). Cross-site call order does not matter; the queue
+ *    within a label is that site's own sequence (e.g. retries). Branch flows
+ *    ("GET, then POST or PUT") attach both branches and assert which one was
+ *    consumed via sentRequestsAt().
  *
  * <pre>
  * // usecase:  this.http.label(LBL_EXISTS).send(req);
  * MockHttpRequestHandler mock = new MockHttpRequestHandler()
  *   .attach(LBL_EXISTS, MockResponse.of('GET').respond(notFound, 404))
- *   .attach(LBL_CREATE, MockResponse.of('POST').respond(created, 200));
+ *   .attach(LBL_CREATE, MockResponse.of('POST').respond(created, 201))
+ *   .attach(LBL_UPDATE, MockResponse.of('PUT').respond(updated, 200));
  * </pre>
+ *
+ * A response is consumed once; an exhausted queue fails with a detailed error
+ * (call overruns are caught, not hidden). Declare `.repeat()` on the last
+ * response of a queue to make it answer every further request instead.
  *
  * Once attach() is used, every send() must be preceded by label() (the label
  * is consumed per send). Without attach(), label() calls are ignored, so
- * labeled production code can still be tested with a plain constructor mock.
+ * labeled production code can still be tested with a plain script mock.
  */
 public with sharing class MockHttpRequestHandler implements IHttpRequestHandler {
   @TestVisible
   private List<HttpRequest> sentRequests = new List<HttpRequest>();
   private List<String> sentLabels = new List<String>();
 
-  private Map<String, ResponseQueue> defaultQueues = new Map<String, ResponseQueue>();
-  private Map<String, Map<String, ResponseQueue>> labelToQueues = new Map<String, Map<String, ResponseQueue>>();
+  private ResponseQueue defaultQueue = new ResponseQueue();
+  private Map<String, ResponseQueue> labelToQueue = new Map<String, ResponseQueue>();
 
   private MockResponse currentMockResponse;
   private String pendingLabel;
@@ -52,27 +56,27 @@ public with sharing class MockHttpRequestHandler implements IHttpRequestHandler 
   }
 
   /**
-   * @description Creates a handler with a single response rule.
+   * @description Creates a handler whose script is a single response.
    *
    * @param response The mocked response.
    */
   public MockHttpRequestHandler(MockResponse response) {
-    this.register(this.defaultQueues, response);
+    this.register(this.defaultQueue, response);
     this.currentMockResponse = null;
   }
 
   /**
-   * @description Creates a handler with multiple response rules, consumed as a
-   * FIFO queue per HTTP method.
+   * @description Creates a handler whose script is the given response sequence,
+   * consumed strictly in order.
    *
-   * @param responses The mocked responses.
+   * @param responses The mocked responses, in expected callout order.
    */
   public MockHttpRequestHandler(List<MockResponse> responses) {
     if (responses == null || responses.isEmpty()) {
       throw new IllegalArgumentException('Responses cannot be null or empty');
     }
     for (MockResponse response : responses) {
-      this.register(this.defaultQueues, response);
+      this.register(this.defaultQueue, response);
     }
     this.currentMockResponse = null;
   }
@@ -82,7 +86,7 @@ public with sharing class MockHttpRequestHandler implements IHttpRequestHandler 
   // =================================================================================
 
   /**
-   * @description Attaches a response rule under a label. Once attach() is used,
+   * @description Attaches a response under a label. Once attach() is used,
    * every send() must be routed with label().
    *
    * @param label The label naming a callout site.
@@ -94,10 +98,12 @@ public with sharing class MockHttpRequestHandler implements IHttpRequestHandler 
   }
 
   /**
-   * @description Attaches multiple response rules under a label.
+   * @description Attaches a response sequence under a label. The list is that
+   * callout site's own script (e.g. retry attempts), consumed in order.
+   * Attaching to the same label again appends to its queue.
    *
    * @param label The label naming a callout site.
-   * @param responses The mocked responses.
+   * @param responses The mocked responses, in expected order for this site.
    * @return This handler (for chaining).
    */
   public MockHttpRequestHandler attach(String label, List<MockResponse> responses) {
@@ -107,23 +113,23 @@ public with sharing class MockHttpRequestHandler implements IHttpRequestHandler 
     if (responses == null || responses.isEmpty()) {
       throw new IllegalArgumentException('Responses cannot be null or empty');
     }
-    if (!this.defaultQueues.isEmpty()) {
+    if (!this.defaultQueue.isEmpty()) {
       throw new IllegalArgumentException(
-        'Cannot mix attach() with constructor responses. Use either the constructor (single callout site) or attach() with labels (multiple callout sites).'
+        'Cannot mix attach() with constructor responses. Use either the constructor script (single flow) or attach() with labels (multiple callout sites).'
       );
     }
-    if (!this.labelToQueues.containsKey(label)) {
-      this.labelToQueues.put(label, new Map<String, ResponseQueue>());
+    if (!this.labelToQueue.containsKey(label)) {
+      this.labelToQueue.put(label, new ResponseQueue());
     }
     for (MockResponse response : responses) {
-      this.register(this.labelToQueues.get(label), response);
+      this.register(this.labelToQueue.get(label), response);
     }
     return this;
   }
 
   /**
-   * @description Routes the next send() to the responses attached under the label.
-   * Ignored when no attach() was used (plain constructor mode).
+   * @description Routes the next send() to the queue attached under the label.
+   * Ignored when no attach() was used (script mode).
    *
    * @param label The label naming the purpose of the next send().
    * @return This handler.
@@ -141,35 +147,57 @@ public with sharing class MockHttpRequestHandler implements IHttpRequestHandler 
     String consumedLabel = this.pendingLabel;
     this.pendingLabel = null;
 
-    Map<String, ResponseQueue> scope;
-    if (!this.labelToQueues.isEmpty()) {
+    ResponseQueue queue;
+    String scopeName;
+    if (!this.labelToQueue.isEmpty()) {
       if (consumedLabel == null) {
         throw new CalloutException(
           'attach() responses are label-scoped, but send() was called without label().\n' +
             'Call handler.label(\'<label>\').send(request). Registered labels: ' +
-            String.join(new List<String>(this.labelToQueues.keySet()), ', ')
+            String.join(new List<String>(this.labelToQueue.keySet()), ', ')
         );
       }
-      scope = this.labelToQueues.get(consumedLabel);
-      if (scope == null) {
+      queue = this.labelToQueue.get(consumedLabel);
+      if (queue == null) {
         throw new CalloutException(
-          this.buildNoResponseMessage(request, consumedLabel, new Map<String, ResponseQueue>())
+          'No mock response available for: ' + request.getMethod() + ' ' + request.getEndpoint() + '\n' +
+            'Label \'' + consumedLabel + '\' has no attached responses. Registered labels: ' +
+            String.join(new List<String>(this.labelToQueue.keySet()), ', ')
         );
       }
+      scopeName = 'label \'' + consumedLabel + '\'';
     } else {
       consumedLabel = null;
-      scope = this.defaultQueues;
+      queue = this.defaultQueue;
+      scopeName = 'the default script';
     }
 
-    String method = request.getMethod() == null ? null : request.getMethod().toLowerCase();
-    ResponseQueue queue = scope.get(method);
-    if (queue == null || queue.isExhausted()) {
-      throw new CalloutException(this.buildNoResponseMessage(request, consumedLabel, scope));
+    if (queue.isExhausted()) {
+      throw new CalloutException(
+        'No mock response available for: ' + request.getMethod() + ' ' + request.getEndpoint() + '\n' +
+          'Scope: ' + scopeName + '\n' +
+          'Queue: ' + queue.describe()
+      );
     }
 
+    // Method contract check: the next queued response declares which HTTP method
+    // it answers. A mismatch means the flow deviated from the declared script
+    // (wrong branch, wrong order, wrong endpoint wiring) — fail loudly without
+    // consuming the response or recording the request.
+    MockResponse nextResponse = queue.peek();
+    if (request.getMethod() == null || !request.getMethod().equalsIgnoreCase(nextResponse.getMethod())) {
+      throw new CalloutException(
+        'Next queued response expects ' + nextResponse.getMethod().toUpperCase() +
+          ', but the request was: ' + request.getMethod() + ' ' + request.getEndpoint() + '\n' +
+          'Scope: ' + scopeName + '\n' +
+          'Queue: ' + queue.describe()
+      );
+    }
+
+    queue.advance();
     this.sentRequests.add(request);
     this.sentLabels.add(consumedLabel);
-    this.currentMockResponse = queue.next();
+    this.currentMockResponse = nextResponse;
   }
 
   public String getBody() {
@@ -269,12 +297,12 @@ public with sharing class MockHttpRequestHandler implements IHttpRequestHandler 
   // =================================================================================
 
   /**
-   * @description Registers a response into the method-keyed queue map of a scope.
+   * @description Validates and appends a response to a queue.
    *
-   * @param scope The queue map (default or per-label).
+   * @param queue The target queue (default script or per-label).
    * @param response The response to register.
    */
-  private void register(Map<String, ResponseQueue> scope, MockResponse response) {
+  private void register(ResponseQueue queue, MockResponse response) {
     if (response == null) {
       throw new IllegalArgumentException('Response cannot be null');
     }
@@ -283,44 +311,7 @@ public with sharing class MockHttpRequestHandler implements IHttpRequestHandler 
         'MockResponse for method \'' + response.getMethod() + '\' has no content. Call respond(...) before registering.'
       );
     }
-    if (!scope.containsKey(response.getMethod())) {
-      scope.put(response.getMethod(), new ResponseQueue());
-    }
-    scope.get(response.getMethod()).add(response);
-  }
-
-  /**
-   * @description Builds the detailed no-response error: the actual request, the
-   * label (when routed), and every queue's consumption state.
-   *
-   * @param request The request that could not be answered.
-   * @param label The consumed label, or null in constructor mode.
-   * @param scope The queue map that was searched.
-   * @return The composed error message.
-   */
-  private String buildNoResponseMessage(HttpRequest request, String label, Map<String, ResponseQueue> scope) {
-    List<String> lines = new List<String>();
-    lines.add('No mock response available for: ' + request.getMethod() + ' ' + request.getEndpoint());
-    if (label != null) {
-      if (this.labelToQueues.containsKey(label)) {
-        lines.add('Label: \'' + label + '\'');
-      } else {
-        lines.add(
-          'Label: \'' + label + '\' has no attached responses. Registered labels: ' +
-            String.join(new List<String>(this.labelToQueues.keySet()), ', ')
-        );
-      }
-    }
-    if (scope.isEmpty()) {
-      lines.add('Queues: none');
-    } else {
-      List<String> states = new List<String>();
-      for (String method : scope.keySet()) {
-        states.add('[' + method + ': ' + scope.get(method).describe() + ']');
-      }
-      lines.add('Queues: ' + String.join(states, ', '));
-    }
-    return String.join(lines, '\n');
+    queue.add(response);
   }
 
   // =================================================================================
@@ -328,8 +319,8 @@ public with sharing class MockHttpRequestHandler implements IHttpRequestHandler 
   // =================================================================================
 
   /**
-   * @description FIFO queue of responses for one HTTP method. A repeat() response
-   * pins the pointer, answering every further request of the method.
+   * @description FIFO queue of responses. A repeat() response pins the pointer,
+   * answering every further request of its scope.
    */
   private class ResponseQueue {
     private List<MockResponse> responses = new List<MockResponse>();
@@ -338,22 +329,28 @@ public with sharing class MockHttpRequestHandler implements IHttpRequestHandler 
     public void add(MockResponse response) {
       if (!this.responses.isEmpty() && this.responses[this.responses.size() - 1].isRepeating()) {
         throw new IllegalArgumentException(
-          'A repeat() response must be the last one declared for its method (\'' + response.getMethod() + '\').'
+          'A repeat() response must be the last one in its queue (\'' + response.getMethod() + '\' was added after it).'
         );
       }
       this.responses.add(response);
+    }
+
+    public Boolean isEmpty() {
+      return this.responses.isEmpty();
     }
 
     public Boolean isExhausted() {
       return this.pointer >= this.responses.size();
     }
 
-    public MockResponse next() {
-      MockResponse response = this.responses[this.pointer];
-      if (!response.isRepeating()) {
+    public MockResponse peek() {
+      return this.responses[this.pointer];
+    }
+
+    public void advance() {
+      if (!this.responses[this.pointer].isRepeating()) {
         this.pointer++;
       }
-      return response;
     }
 
     public String describe() {

@@ -11,11 +11,61 @@ private class MockHttpRequestHandlerTest {
   }
 
   // ===============================================================================
-  // Method-keyed queues (constructor mode)
+  // Script mode (constructor list = the flow's script, consumed strictly in order)
   // ===============================================================================
 
   @IsTest
-  static void testSend_WhenSingleResponse_ThenReturnsIt() {
+  static void testScript_WhenFlowFollowsScript_ThenConsumedInOrder() {
+    // Arrange - 台本: 存在確認 GET 404 → 作成 POST 201 → 再取得 GET 200
+    MockHttpRequestHandler mock = new MockHttpRequestHandler(new List<MockResponse>{
+      MockResponse.of('GET').respond('{"message":"not found"}', 404),
+      MockResponse.of('POST').respond('{"created":true}', 201),
+      MockResponse.of('GET').respond('{"record":{}}', 200)
+    });
+
+    // Act & Assert - 台本どおりの順で1手ずつ消費される
+    mock.send(buildRequest('GET', 'https://example.com/records/1'));
+    Assert.areEqual(404, mock.getStatusCode());
+
+    mock.send(buildRequest('POST', 'https://example.com/records'));
+    Assert.areEqual(201, mock.getStatusCode());
+
+    mock.send(buildRequest('GET', 'https://example.com/records/1'));
+    Assert.areEqual(200, mock.getStatusCode());
+    Assert.areEqual(3, mock.sentRequests.size());
+  }
+
+  @IsTest
+  static void testScript_WhenOrderDeviates_ThenMethodMismatchAndNothingConsumed() {
+    // Arrange - 台本の1手目は GET
+    MockHttpRequestHandler mock = new MockHttpRequestHandler(new List<MockResponse>{
+      MockResponse.of('GET').respond('{"a":1}', 200),
+      MockResponse.of('POST').respond('{"b":2}', 201)
+    });
+    CalloutException caughtException = null;
+
+    // Act - 台本を無視して POST を先に投げる
+    try {
+      mock.send(buildRequest('POST', 'https://example.com/records'));
+    } catch (CalloutException e) {
+      caughtException = e;
+    }
+
+    // Assert - 期待メソッドと実リクエストが読めるエラー。消費も記録もされない
+    Assert.isNotNull(caughtException);
+    String message = caughtException.getMessage();
+    Assert.isTrue(message.contains('Next queued response expects GET'), message);
+    Assert.isTrue(message.contains('the request was: POST https://example.com/records'), message);
+    Assert.isTrue(message.contains('Queue: 0 of 2 consumed'), message);
+    Assert.areEqual(0, mock.sentRequests.size(), 'Mismatched request should not be recorded');
+
+    // Act & Assert - 正しい順で送り直せばそのまま進める (キューが汚れていない証明)
+    mock.send(buildRequest('GET', 'https://example.com/records/1'));
+    Assert.areEqual(200, mock.getStatusCode());
+  }
+
+  @IsTest
+  static void testScript_WhenSingleResponse_ThenReturnsIt() {
     // Arrange
     MockHttpRequestHandler mock = new MockHttpRequestHandler(
       MockResponse.of('GET').respond('{"found":true}', 200)
@@ -28,12 +78,11 @@ private class MockHttpRequestHandlerTest {
     // Assert
     Assert.areEqual(200, mock.getStatusCode());
     Assert.areEqual('{"found":true}', mock.getBody());
-    Assert.areEqual(1, mock.sentRequests.size());
     Assert.areEqual(req, mock.sentRequests[0]);
   }
 
   @IsTest
-  static void testSend_WhenMethodCaseDiffers_ThenNormalizedAndMatched() {
+  static void testScript_WhenMethodCaseDiffers_ThenMatched() {
     // Arrange - of('get') 小文字宣言でも GET リクエストにマッチ
     MockHttpRequestHandler mock = new MockHttpRequestHandler(
       MockResponse.of('get').respond('{"ok":true}', 200)
@@ -47,43 +96,7 @@ private class MockHttpRequestHandlerTest {
   }
 
   @IsTest
-  static void testSend_WhenSameMethodQueued_ThenConsumedInOrder() {
-    // Arrange - GET は宣言順に消費される (存在確認 404 → 作成後 200)
-    MockHttpRequestHandler mock = new MockHttpRequestHandler(new List<MockResponse>{
-      MockResponse.of('GET').respond('{"message":"not found"}', 404),
-      MockResponse.of('GET').respond('{"record":{}}', 200)
-    });
-
-    // Act & Assert
-    mock.send(buildRequest('GET', 'https://example.com'));
-    Assert.areEqual(404, mock.getStatusCode());
-
-    mock.send(buildRequest('GET', 'https://example.com'));
-    Assert.areEqual(200, mock.getStatusCode());
-  }
-
-  @IsTest
-  static void testSend_WhenMethodsInterleaved_ThenOrderIndependent() {
-    // Arrange - 宣言順は GET, GET, POST だが、呼び出し順に依存しない
-    MockHttpRequestHandler mock = new MockHttpRequestHandler(new List<MockResponse>{
-      MockResponse.of('GET').respond('{"n":1}', 200),
-      MockResponse.of('GET').respond('{"n":2}', 200),
-      MockResponse.of('POST').respond('{"created":true}', 201)
-    });
-
-    // Act & Assert - POST を先に呼んでも POST の応答が返る
-    mock.send(buildRequest('POST', 'https://example.com'));
-    Assert.areEqual(201, mock.getStatusCode());
-
-    mock.send(buildRequest('GET', 'https://example.com'));
-    Assert.areEqual('{"n":1}', mock.getBody());
-
-    mock.send(buildRequest('GET', 'https://example.com'));
-    Assert.areEqual('{"n":2}', mock.getBody());
-  }
-
-  @IsTest
-  static void testRepeat_WhenDeclaredOnLast_ThenAnswersForever() {
+  static void testScript_WhenRepeatOnLast_ThenAnswersForeverWithMethodCheck() {
     // Arrange - 1回目 404、以降ずっと 200
     MockHttpRequestHandler mock = new MockHttpRequestHandler(new List<MockResponse>{
       MockResponse.of('GET').respond('{"message":"not found"}', 404),
@@ -97,24 +110,18 @@ private class MockHttpRequestHandlerTest {
       mock.send(buildRequest('GET', 'https://example.com'));
       Assert.areEqual(200, mock.getStatusCode(), 'repeat() response should answer every further GET');
     }
-  }
 
-  @IsTest
-  static void testRegister_WhenRepeatIsNotLast_ThenThrowsException() {
-    // Act & Assert - repeat() の後ろに同メソッドの応答は積めない (到達不能のため)
+    // Assert - repeat 中でもメソッド契約チェックは生きている
     try {
-      new MockHttpRequestHandler(new List<MockResponse>{
-        MockResponse.of('GET').respond('{"a":1}', 200).repeat(),
-        MockResponse.of('GET').respond('{"b":2}', 200)
-      });
+      mock.send(buildRequest('POST', 'https://example.com'));
       Assert.fail('Exception should be thrown');
-    } catch (IllegalArgumentException e) {
-      Assert.isTrue(e.getMessage().contains('must be the last'), e.getMessage());
+    } catch (CalloutException e) {
+      Assert.isTrue(e.getMessage().contains('Next queued response expects GET'), e.getMessage());
     }
   }
 
   @IsTest
-  static void testSend_WhenQueueExhausted_ThenDetailedErrorAndRequestNotRecorded() {
+  static void testScript_WhenExhausted_ThenDetailedErrorAndRequestNotRecorded() {
     // Arrange
     MockHttpRequestHandler mock = new MockHttpRequestHandler(
       MockResponse.of('GET').respond('{"ok":true}', 200)
@@ -122,39 +129,250 @@ private class MockHttpRequestHandlerTest {
     mock.send(buildRequest('GET', 'https://example.com/first'));
     CalloutException caughtException = null;
 
-    // Act - 2回目の GET は枯渇
+    // Act - 2回目は台本が尽きている
     try {
       mock.send(buildRequest('GET', 'https://example.com/second'));
     } catch (CalloutException e) {
       caughtException = e;
     }
 
-    // Assert - 実リクエストとキュー状態が読めるエラー
+    // Assert
     Assert.isNotNull(caughtException);
     String message = caughtException.getMessage();
     Assert.isTrue(message.contains('No mock response available for: GET https://example.com/second'), message);
-    Assert.isTrue(message.contains('[get: 1 of 1 consumed]'), message);
+    Assert.isTrue(message.contains('Scope: the default script'), message);
+    Assert.isTrue(message.contains('Queue: 1 of 1 consumed'), message);
     Assert.areEqual(1, mock.sentRequests.size(), 'Failed request should not be recorded');
   }
 
   @IsTest
-  static void testSend_WhenMethodHasNoQueue_ThenDetailedError() {
-    // Arrange - DELETE の応答は未宣言
-    MockHttpRequestHandler mock = new MockHttpRequestHandler(
-      MockResponse.of('POST').respond('{"ok":true}', 200)
-    );
+  static void testRegister_WhenRepeatIsNotLast_ThenThrowsException() {
+    // Act & Assert - repeat() の後ろに応答は積めない (到達不能のため)
+    try {
+      new MockHttpRequestHandler(new List<MockResponse>{
+        MockResponse.of('GET').respond('{"a":1}', 200).repeat(),
+        MockResponse.of('POST').respond('{"b":2}', 201)
+      });
+      Assert.fail('Exception should be thrown');
+    } catch (IllegalArgumentException e) {
+      Assert.isTrue(e.getMessage().contains('must be the last'), e.getMessage());
+    }
+  }
+
+  // ===============================================================================
+  // Label mode - branch flows (GET してから POST or PUT が分岐するパターン)
+  // ===============================================================================
+
+  @IsTest
+  static void testLabel_WhenCreateBranchTaken_ThenOnlyCreateConsumed() {
+    // Arrange - upsert フロー: 存在確認 GET が 404 → POST (作成) 分岐を通る想定。
+    // 両分岐を attach しておき、どちらが消費されたかで通った分岐を assert する
+    MockHttpRequestHandler mock = new MockHttpRequestHandler()
+      .attach('exists', MockResponse.of('GET').respond('{"message":"not found"}', 404))
+      .attach('create', MockResponse.of('POST').respond('{"created":true}', 201))
+      .attach('update', MockResponse.of('PUT').respond('{"updated":true}', 200));
+
+    // Act - 作成分岐のフロー
+    mock.label('exists').send(buildRequest('GET', 'https://example.com/records/1'));
+    Assert.areEqual(404, mock.getStatusCode());
+    mock.label('create').send(buildRequest('POST', 'https://example.com/records'));
+    Assert.areEqual(201, mock.getStatusCode());
+
+    // Assert - create だけが消費され、update は未使用のまま (未使用 attach は無害)
+    Assert.areEqual(1, mock.sentRequestsAt('exists').size());
+    Assert.areEqual(1, mock.sentRequestsAt('create').size());
+    Assert.areEqual(0, mock.sentRequestsAt('update').size());
+    Assert.areEqual(0, mock.countByMethod('PUT'));
+  }
+
+  @IsTest
+  static void testLabel_WhenUpdateBranchTaken_ThenOnlyUpdateConsumed() {
+    // Arrange - 存在確認 GET が 200 → PUT (更新) 分岐を通る想定
+    MockHttpRequestHandler mock = new MockHttpRequestHandler()
+      .attach('exists', MockResponse.of('GET').respond('{"record":{}}', 200))
+      .attach('create', MockResponse.of('POST').respond('{"created":true}', 201))
+      .attach('update', MockResponse.of('PUT').respond('{"updated":true}', 200));
+
+    // Act - 更新分岐のフロー
+    mock.label('exists').send(buildRequest('GET', 'https://example.com/records/1'));
+    mock.label('update').send(buildRequest('PUT', 'https://example.com/records/1'));
+
+    // Assert
+    Assert.areEqual(1, mock.sentRequestsAt('update').size());
+    Assert.areEqual(0, mock.sentRequestsAt('create').size());
+    Assert.areEqual(0, mock.countByMethod('POST'));
+  }
+
+  @IsTest
+  static void testLabel_WhenRetrySequence_ThenConsumesInOrderAndExhausts() {
+    // Arrange - 同一サイトのリトライ台本: 500, 500 のあと 200
+    MockHttpRequestHandler mock = new MockHttpRequestHandler()
+      .attach('sync', new List<MockResponse>{
+        MockResponse.of('POST').respond('{"error":"server"}', 500),
+        MockResponse.of('POST').respond('{"error":"server"}', 500),
+        MockResponse.of('POST').respond('{"ok":true}', 200)
+      });
+
+    // Act & Assert - キューが1手ずつ正確に消費される
+    mock.label('sync').send(buildRequest('POST', 'https://example.com/sync'));
+    Assert.areEqual(500, mock.getStatusCode());
+    mock.label('sync').send(buildRequest('POST', 'https://example.com/sync'));
+    Assert.areEqual(500, mock.getStatusCode());
+    mock.label('sync').send(buildRequest('POST', 'https://example.com/sync'));
+    Assert.areEqual(200, mock.getStatusCode());
+
+    // Assert - 4回目 (呼び過ぎ) は枯渇として検知される
+    try {
+      mock.label('sync').send(buildRequest('POST', 'https://example.com/sync'));
+      Assert.fail('Exception should be thrown');
+    } catch (CalloutException e) {
+      Assert.isTrue(e.getMessage().contains('Scope: label \'sync\''), e.getMessage());
+      Assert.isTrue(e.getMessage().contains('Queue: 3 of 3 consumed'), e.getMessage());
+    }
+  }
+
+  @IsTest
+  static void testLabel_WhenMixedMethodSequenceInLabel_ThenOrderEnforced() {
+    // Arrange - 1つのサイト台本に GET → PUT の2手 (順序はメソッド契約で守られる)
+    MockHttpRequestHandler mock = new MockHttpRequestHandler()
+      .attach('flow', new List<MockResponse>{
+        MockResponse.of('GET').respond('{"n":1}', 200),
+        MockResponse.of('PUT').respond('{"n":2}', 200)
+      });
+
+    // Act & Assert - PUT を先に投げると台本違反
+    try {
+      mock.label('flow').send(buildRequest('PUT', 'https://example.com'));
+      Assert.fail('Exception should be thrown');
+    } catch (CalloutException e) {
+      Assert.isTrue(e.getMessage().contains('Next queued response expects GET'), e.getMessage());
+    }
+
+    // Assert - 正しい順ならそのまま進める
+    mock.label('flow').send(buildRequest('GET', 'https://example.com'));
+    Assert.areEqual('{"n":1}', mock.getBody());
+    mock.label('flow').send(buildRequest('PUT', 'https://example.com'));
+    Assert.areEqual('{"n":2}', mock.getBody());
+  }
+
+  @IsTest
+  static void testLabel_WhenQueueHeadMethodMismatch_ThenDetailedError() {
+    // Arrange - POST を宣言したサイトに GET が来たら分岐バグとして検知
+    MockHttpRequestHandler mock = new MockHttpRequestHandler()
+      .attach('create', MockResponse.of('POST').respond('{}', 201));
     CalloutException caughtException = null;
 
     // Act
     try {
-      mock.send(buildRequest('DELETE', 'https://example.com'));
+      mock.label('create').send(buildRequest('GET', 'https://example.com'));
     } catch (CalloutException e) {
       caughtException = e;
     }
 
     // Assert
     Assert.isNotNull(caughtException);
-    Assert.isTrue(caughtException.getMessage().contains('[post: 0 of 1 consumed]'), caughtException.getMessage());
+    String message = caughtException.getMessage();
+    Assert.isTrue(message.contains('Next queued response expects POST'), message);
+    Assert.isTrue(message.contains('Scope: label \'create\''), message);
+  }
+
+  @IsTest
+  static void testAttach_WhenSameLabelTwice_ThenAppendsToQueue() {
+    // Arrange - 同一 label への attach はキューに追記される
+    MockHttpRequestHandler mock = new MockHttpRequestHandler()
+      .attach('sync', MockResponse.of('POST').respond('{"n":1}', 500))
+      .attach('sync', MockResponse.of('POST').respond('{"n":2}', 200));
+
+    // Act & Assert
+    mock.label('sync').send(buildRequest('POST', 'https://example.com'));
+    Assert.areEqual(500, mock.getStatusCode());
+    mock.label('sync').send(buildRequest('POST', 'https://example.com'));
+    Assert.areEqual(200, mock.getStatusCode());
+  }
+
+  // ===============================================================================
+  // Label mode - routing rules
+  // ===============================================================================
+
+  @IsTest
+  static void testSend_WhenAttachUsedWithoutLabel_ThenThrowsException() {
+    // Arrange
+    MockHttpRequestHandler mock = new MockHttpRequestHandler()
+      .attach('exists', MockResponse.of('GET').respond('{}', 200));
+
+    // Act & Assert
+    try {
+      mock.send(buildRequest('GET', 'https://example.com'));
+      Assert.fail('Exception should be thrown');
+    } catch (CalloutException e) {
+      Assert.isTrue(e.getMessage().contains('without label()'), e.getMessage());
+      Assert.isTrue(e.getMessage().contains('exists'), e.getMessage());
+    }
+  }
+
+  @IsTest
+  static void testSend_WhenUnknownLabel_ThenThrowsWithRegisteredLabels() {
+    // Arrange
+    MockHttpRequestHandler mock = new MockHttpRequestHandler()
+      .attach('exists', MockResponse.of('GET').respond('{}', 200));
+    CalloutException caughtException = null;
+
+    // Act
+    try {
+      mock.label('tyop').send(buildRequest('GET', 'https://example.com'));
+    } catch (CalloutException e) {
+      caughtException = e;
+    }
+
+    // Assert - タイポしたラベルと登録済みラベル一覧が読める
+    Assert.isNotNull(caughtException);
+    Assert.isTrue(caughtException.getMessage().contains('\'tyop\' has no attached responses'), caughtException.getMessage());
+    Assert.isTrue(caughtException.getMessage().contains('exists'), caughtException.getMessage());
+  }
+
+  @IsTest
+  static void testLabel_WhenConsumed_ThenNextSendNeedsLabelAgain() {
+    // Arrange - ラベルは send 1回で消費される (MockEloquent と同じ)
+    MockHttpRequestHandler mock = new MockHttpRequestHandler()
+      .attach('fetch', new List<MockResponse>{
+        MockResponse.of('GET').respond('{"n":1}', 200),
+        MockResponse.of('GET').respond('{"n":2}', 200)
+      });
+    mock.label('fetch').send(buildRequest('GET', 'https://example.com'));
+
+    // Act & Assert
+    try {
+      mock.send(buildRequest('GET', 'https://example.com'));
+      Assert.fail('Exception should be thrown');
+    } catch (CalloutException e) {
+      Assert.isTrue(e.getMessage().contains('without label()'), e.getMessage());
+    }
+  }
+
+  @IsTest
+  static void testLabel_WhenNoAttachUsed_ThenIgnored() {
+    // Arrange - label() 付き本番コードを、素の台本モックでもテストできる
+    MockHttpRequestHandler mock = new MockHttpRequestHandler(
+      MockResponse.of('GET').respond('{"ok":true}', 200)
+    );
+
+    // Act
+    mock.label('anything').send(buildRequest('GET', 'https://example.com'));
+
+    // Assert
+    Assert.areEqual(200, mock.getStatusCode());
+  }
+
+  @IsTest
+  static void testAttach_WhenMixedWithConstructorResponses_ThenThrowsException() {
+    // Act & Assert
+    try {
+      new MockHttpRequestHandler(MockResponse.of('GET').respond('{}', 200))
+        .attach('exists', MockResponse.of('GET').respond('{}', 200));
+      Assert.fail('Exception should be thrown');
+    } catch (IllegalArgumentException e) {
+      Assert.isTrue(e.getMessage().contains('Cannot mix attach()'), e.getMessage());
+    }
   }
 
   // ===============================================================================
@@ -283,7 +501,7 @@ private class MockHttpRequestHandlerTest {
 
   @IsTest
   static void testGetBodyAsBlob_WhenStringConfigured_ThenFallsBackToValueOf() {
-    // Arrange - 既存の String 本文の書き方でも getBodyAsBlob() が使える (移行容易性)
+    // Arrange - String 本文の書き方でも getBodyAsBlob() が使える (移行容易性)
     MockHttpRequestHandler mock = new MockHttpRequestHandler(
       MockResponse.of('GET').respond('{"ok":true}', 200)
     );
@@ -313,126 +531,6 @@ private class MockHttpRequestHandlerTest {
   }
 
   // ===============================================================================
-  // Label mode (attach / label)
-  // ===============================================================================
-
-  @IsTest
-  static void testAttach_WhenLabeled_ThenRoutedByLabel() {
-    // Arrange - 同じ GET でもラベルで応答を出し分けられる
-    MockHttpRequestHandler mock = new MockHttpRequestHandler()
-      .attach('exists', MockResponse.of('GET').respond('{"message":"not found"}', 404))
-      .attach('fetch', MockResponse.of('GET').respond('{"record":{}}', 200));
-
-    // Act & Assert
-    mock.label('fetch').send(buildRequest('GET', 'https://example.com'));
-    Assert.areEqual(200, mock.getStatusCode());
-
-    mock.label('exists').send(buildRequest('GET', 'https://example.com'));
-    Assert.areEqual(404, mock.getStatusCode());
-  }
-
-  @IsTest
-  static void testSend_WhenAttachUsedWithoutLabel_ThenThrowsException() {
-    // Arrange
-    MockHttpRequestHandler mock = new MockHttpRequestHandler()
-      .attach('exists', MockResponse.of('GET').respond('{}', 200));
-
-    // Act & Assert
-    try {
-      mock.send(buildRequest('GET', 'https://example.com'));
-      Assert.fail('Exception should be thrown');
-    } catch (CalloutException e) {
-      Assert.isTrue(e.getMessage().contains('without label()'), e.getMessage());
-      Assert.isTrue(e.getMessage().contains('exists'), e.getMessage());
-    }
-  }
-
-  @IsTest
-  static void testSend_WhenUnknownLabel_ThenThrowsException() {
-    // Arrange
-    MockHttpRequestHandler mock = new MockHttpRequestHandler()
-      .attach('exists', MockResponse.of('GET').respond('{}', 200));
-    CalloutException caughtException = null;
-
-    // Act
-    try {
-      mock.label('tyop').send(buildRequest('GET', 'https://example.com'));
-    } catch (CalloutException e) {
-      caughtException = e;
-    }
-
-    // Assert - タイポしたラベルと登録済みラベル一覧が読める
-    Assert.isNotNull(caughtException);
-    Assert.isTrue(caughtException.getMessage().contains('\'tyop\' has no attached responses'), caughtException.getMessage());
-    Assert.isTrue(caughtException.getMessage().contains('exists'), caughtException.getMessage());
-  }
-
-  @IsTest
-  static void testLabel_WhenConsumed_ThenNextSendNeedsLabelAgain() {
-    // Arrange - ラベルは send 1回で消費される (MockEloquent と同じ)
-    MockHttpRequestHandler mock = new MockHttpRequestHandler()
-      .attach('fetch', new List<MockResponse>{
-        MockResponse.of('GET').respond('{"n":1}', 200),
-        MockResponse.of('GET').respond('{"n":2}', 200)
-      });
-    mock.label('fetch').send(buildRequest('GET', 'https://example.com'));
-
-    // Act & Assert
-    try {
-      mock.send(buildRequest('GET', 'https://example.com'));
-      Assert.fail('Exception should be thrown');
-    } catch (CalloutException e) {
-      Assert.isTrue(e.getMessage().contains('without label()'), e.getMessage());
-    }
-  }
-
-  @IsTest
-  static void testLabel_WhenNoAttachUsed_ThenIgnored() {
-    // Arrange - label() 付き本番コードを、素のコンストラクタモックでもテストできる
-    MockHttpRequestHandler mock = new MockHttpRequestHandler(
-      MockResponse.of('GET').respond('{"ok":true}', 200)
-    );
-
-    // Act
-    mock.label('anything').send(buildRequest('GET', 'https://example.com'));
-
-    // Assert
-    Assert.areEqual(200, mock.getStatusCode());
-  }
-
-  @IsTest
-  static void testAttach_WhenMixedWithConstructorResponses_ThenThrowsException() {
-    // Act & Assert
-    try {
-      new MockHttpRequestHandler(MockResponse.of('GET').respond('{}', 200))
-        .attach('exists', MockResponse.of('GET').respond('{}', 200));
-      Assert.fail('Exception should be thrown');
-    } catch (IllegalArgumentException e) {
-      Assert.isTrue(e.getMessage().contains('Cannot mix attach()'), e.getMessage());
-    }
-  }
-
-  @IsTest
-  static void testSend_WhenLabeledMethodMismatch_ThenDetailedError() {
-    // Arrange - POST を宣言したラベルに GET が来たら分岐バグとして検知
-    MockHttpRequestHandler mock = new MockHttpRequestHandler()
-      .attach('create', MockResponse.of('POST').respond('{}', 200));
-    CalloutException caughtException = null;
-
-    // Act
-    try {
-      mock.label('create').send(buildRequest('GET', 'https://example.com'));
-    } catch (CalloutException e) {
-      caughtException = e;
-    }
-
-    // Assert
-    Assert.isNotNull(caughtException);
-    Assert.isTrue(caughtException.getMessage().contains('GET'), caughtException.getMessage());
-    Assert.isTrue(caughtException.getMessage().contains('[post: 0 of 1 consumed]'), caughtException.getMessage());
-  }
-
-  // ===============================================================================
   // Verification helpers
   // ===============================================================================
 
@@ -440,8 +538,9 @@ private class MockHttpRequestHandlerTest {
   static void testHelpers_WhenRequestsSent_ThenCountAndFilterWork() {
     // Arrange
     MockHttpRequestHandler mock = new MockHttpRequestHandler(new List<MockResponse>{
-      MockResponse.of('GET').respond('{"a":1}', 200).repeat(),
-      MockResponse.of('POST').respond('{"b":2}', 200)
+      MockResponse.of('GET').respond('{"a":1}', 200),
+      MockResponse.of('POST').respond('{"b":2}', 200),
+      MockResponse.of('GET').respond('{"c":3}', 200)
     });
 
     // Act
@@ -462,7 +561,7 @@ private class MockHttpRequestHandlerTest {
     // Arrange
     MockHttpRequestHandler mock = new MockHttpRequestHandler()
       .attach('exists', MockResponse.of('GET').respond('{}', 404))
-      .attach('create', MockResponse.of('POST').respond('{}', 200));
+      .attach('create', MockResponse.of('POST').respond('{}', 201));
 
     // Act
     mock.label('exists').send(buildRequest('GET', 'https://example.com/a'));
