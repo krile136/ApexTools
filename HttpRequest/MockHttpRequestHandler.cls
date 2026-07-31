@@ -179,11 +179,25 @@ public with sharing class MockHttpRequestHandler implements IHttpRequestHandler 
     return this.currentMockResponse.getBody();
   }
 
+  public Blob getBodyAsBlob() {
+    if (this.currentMockResponse == null) {
+      throw new JSONException('No response available. Ensure send() has been called.');
+    }
+    return this.currentMockResponse.getBodyAsBlob();
+  }
+
   public Integer getStatusCode() {
     if (this.currentMockResponse == null) {
       throw new JSONException('No response available. Ensure send() has been called.');
     }
     return this.currentMockResponse.getStatusCode();
+  }
+
+  public String getHeader(String name) {
+    if (this.currentMockResponse == null) {
+      throw new JSONException('No response available. Ensure send() has been called.');
+    }
+    return this.currentMockResponse.getHeader(name);
   }
 
   // =================================================================================

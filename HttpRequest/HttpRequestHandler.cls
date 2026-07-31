@@ -30,10 +30,24 @@ public with sharing class HttpRequestHandler implements IHttpRequestHandler {
     return this.currentHttpResponse.getBody();
   }
 
+  public Blob getBodyAsBlob() {
+    if (this.currentHttpResponse == null) {
+      return null;
+    }
+    return this.currentHttpResponse.getBodyAsBlob();
+  }
+
   public Integer getStatusCode() {
     if (this.currentHttpResponse == null) {
       return null;
     }
     return this.currentHttpResponse.getStatusCode();
+  }
+
+  public String getHeader(String name) {
+    if (this.currentHttpResponse == null) {
+      return null;
+    }
+    return this.currentHttpResponse.getHeader(name);
   }
 }

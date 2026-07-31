@@ -59,4 +59,14 @@ public with sharing class HttpRequestHandlerTest {
     // Assert - 本番実装では label は no-op で自身を返す
     Assert.areEqual(handler, returned);
   }
+
+  @IsTest
+  static void testGetBodyAsBlobAndHeader_WhenSendNotCalled_ThenReturnNull() {
+    // Arrange
+    HttpRequestHandler handler = new HttpRequestHandler();
+
+    // Act & Assert
+    Assert.isNull(handler.getBodyAsBlob());
+    Assert.isNull(handler.getHeader('Content-Type'));
+  }
 }

@@ -14,7 +14,9 @@
 public with sharing class MockResponse {
   private String method;
   private String body;
+  private Blob bodyBlob;
   private Integer statusCode;
+  private Map<String, String> headers = new Map<String, String>();
   private Boolean repeating = false;
 
   /**
@@ -52,6 +54,42 @@ public with sharing class MockResponse {
     }
     this.body = body;
     this.statusCode = statusCode;
+    return this;
+  }
+
+  /**
+   * @description Sets the response content from a binary body (e.g. an image).
+   * Read it back via getBodyAsBlob().
+   *
+   * @param body The response body as a Blob.
+   * @param statusCode The response status code.
+   * @return This MockResponse (for chaining).
+   */
+  public MockResponse respond(Blob body, Integer statusCode) {
+    if (body == null) {
+      throw new IllegalArgumentException('Body blob cannot be null');
+    }
+    if (statusCode == null) {
+      throw new IllegalArgumentException('StatusCode cannot be null');
+    }
+    this.bodyBlob = body;
+    this.statusCode = statusCode;
+    return this;
+  }
+
+  /**
+   * @description Sets a response header (e.g. Content-Type). Lookup via
+   * getHeader() is case-insensitive, as HTTP headers are.
+   *
+   * @param name The header name.
+   * @param value The header value.
+   * @return This MockResponse (for chaining).
+   */
+  public MockResponse header(String name, String value) {
+    if (String.isBlank(name)) {
+      throw new IllegalArgumentException('Header name cannot be blank');
+    }
+    this.headers.put(name.toLowerCase(), value);
     return this;
   }
 
@@ -99,8 +137,44 @@ public with sharing class MockResponse {
     return this.method;
   }
 
+  /**
+   * @description Returns the string body. When only a Blob body was set, it is
+   * converted via toString() — valid for text blobs; truly binary responses
+   * should be read via getBodyAsBlob() instead.
+   */
   public String getBody() {
-    return this.body;
+    if (this.body != null) {
+      return this.body;
+    }
+    if (this.bodyBlob != null) {
+      return this.bodyBlob.toString();
+    }
+    return null;
+  }
+
+  /**
+   * @description Returns the binary body. When only a string body was set, it
+   * falls back to Blob.valueOf(body), so text-configured responses can also be
+   * read as a Blob.
+   */
+  public Blob getBodyAsBlob() {
+    if (this.bodyBlob != null) {
+      return this.bodyBlob;
+    }
+    if (this.body != null) {
+      return Blob.valueOf(this.body);
+    }
+    return null;
+  }
+
+  /**
+   * @description Returns a response header value (case-insensitive), or null when unset.
+   */
+  public String getHeader(String name) {
+    if (name == null) {
+      return null;
+    }
+    return this.headers.get(name.toLowerCase());
   }
 
   public Integer getStatusCode() {

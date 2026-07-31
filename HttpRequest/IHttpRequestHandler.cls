@@ -7,5 +7,7 @@ public interface IHttpRequestHandler {
   IHttpRequestHandler label(String label);
   void send(HttpRequest request);
   String getBody();
+  Blob getBodyAsBlob();
   Integer getStatusCode();
+  String getHeader(String name);
 }

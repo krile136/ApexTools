@@ -242,6 +242,77 @@ private class MockHttpRequestHandlerTest {
   }
 
   // ===============================================================================
+  // Binary bodies and headers
+  // ===============================================================================
+
+  @IsTest
+  static void testGetBodyAsBlob_WhenBlobConfigured_ThenSameBytesReturned() {
+    // Arrange - 実際のバイナリ (非テキスト) のバイト列
+    Blob imageBytes = EncodingUtil.base64Decode('/9j/4AAQSkZJRgABAQAAAQ==');
+    MockHttpRequestHandler mock = new MockHttpRequestHandler(
+      MockResponse.of('GET').respond(imageBytes, 200).header('Content-Type', 'image/jpeg')
+    );
+
+    // Act
+    mock.send(buildRequest('GET', 'https://api.sansan.com/v1/bizCards/xxx/image'));
+
+    // Assert
+    Assert.areEqual(
+      EncodingUtil.base64Encode(imageBytes),
+      EncodingUtil.base64Encode(mock.getBodyAsBlob()),
+      'Blob body should round-trip byte-identically'
+    );
+    Assert.areEqual(200, mock.getStatusCode());
+  }
+
+  @IsTest
+  static void testGetHeader_WhenConfigured_ThenCaseInsensitiveLookup() {
+    // Arrange
+    MockHttpRequestHandler mock = new MockHttpRequestHandler(
+      MockResponse.of('GET').respond('{}', 200).header('Content-Type', 'application/json')
+    );
+
+    // Act
+    mock.send(buildRequest('GET', 'https://example.com'));
+
+    // Assert - HTTP ヘッダは大文字小文字を区別しない / 未設定は null
+    Assert.areEqual('application/json', mock.getHeader('Content-Type'));
+    Assert.areEqual('application/json', mock.getHeader('content-type'));
+    Assert.isNull(mock.getHeader('X-Request-Id'));
+  }
+
+  @IsTest
+  static void testGetBodyAsBlob_WhenStringConfigured_ThenFallsBackToValueOf() {
+    // Arrange - 既存の String 本文の書き方でも getBodyAsBlob() が使える (移行容易性)
+    MockHttpRequestHandler mock = new MockHttpRequestHandler(
+      MockResponse.of('GET').respond('{"ok":true}', 200)
+    );
+
+    // Act
+    mock.send(buildRequest('GET', 'https://example.com'));
+
+    // Assert
+    Assert.areEqual('{"ok":true}', mock.getBodyAsBlob().toString());
+  }
+
+  @IsTest
+  static void testContentTypeGuard_WhenWrongEndpoint_ThenGuardCatchesIt() {
+    // Arrange - 実事故の再現: 画像エンドポイントのつもりが JSON が返る誤ったURL。
+    // Content-Type ガードがあれば HTTP 200 でも壊れた画像を画面に流さず検知できる
+    MockHttpRequestHandler mock = new MockHttpRequestHandler(
+      MockResponse.of('GET').respond('{"bizCardId":"xxx"}', 200).header('Content-Type', 'application/json')
+    );
+
+    // Act
+    mock.send(buildRequest('GET', 'https://api.sansan.com/v1/bizCards/xxx'));
+
+    // Assert - ガード側の判定がモックの枠内で検証できる
+    Assert.areEqual(200, mock.getStatusCode());
+    Assert.isFalse(mock.getHeader('Content-Type').startsWith('image/'),
+      'The guard condition itself is testable inside the framework now');
+  }
+
+  // ===============================================================================
   // Label mode (attach / label)
   // ===============================================================================
 
