@@ -47,4 +47,26 @@ public with sharing class HttpRequestHandlerTest {
       return this.response;
     }
   }
+
+  @IsTest
+  static void testLabel_WhenCalled_ThenNoOpAndReturnsSelf() {
+    // Arrange
+    HttpRequestHandler handler = new HttpRequestHandler();
+
+    // Act
+    IHttpRequestHandler returned = handler.label('anything');
+
+    // Assert - in production, label() is a no-op returning the same instance
+    Assert.areEqual(handler, returned);
+  }
+
+  @IsTest
+  static void testGetBodyAsBlobAndHeader_WhenSendNotCalled_ThenReturnNull() {
+    // Arrange
+    HttpRequestHandler handler = new HttpRequestHandler();
+
+    // Act & Assert
+    Assert.isNull(handler.getBodyAsBlob());
+    Assert.isNull(handler.getHeader('Content-Type'));
+  }
 }
