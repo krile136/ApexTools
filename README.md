@@ -1,84 +1,40 @@
 # ApexTools
 
-Small, dependency-free building blocks for Salesforce Apex projects.
+**Small, dependency-free building blocks for Salesforce Apex projects.**
 
-| Component | Purpose |
-|---|---|
-| `TriggerHandler/` | Trigger handler base class: override only the hooks you need (`beforeInsert` / `afterUpdate` / ...), plus helpers to pick records whose specific fields changed |
-| `HttpRequest/` | HTTP callout DI trio: `IHttpRequestHandler` (interface) / `HttpRequestHandler` (production, thin `Http` wrapper) / `MockHttpRequestHandler` (test double — no `HttpCalloutMock` needed) |
 
-## TriggerHandler
 
-```apex
-public with sharing class TriggerOppHandler extends TriggerHandler {
-  protected override void afterUpdate(Map<Id, SObject> newMap, Map<Id, SObject> oldMap) {
-    Set<Id> changedIds = this.getUpdateRecordIdsWithChangedFields(new List<SObjectField>{
-      Opportunity.Amount, Opportunity.CloseDate
-    });
-    (new RecalculateUsecase(changedIds)).invoke();
-  }
-}
-// trigger: (new TriggerOppHandler()).execute();
+📚 **Documentation: [krileworks.com](https://krileworks.com/apex-stem/docs/apex-tools-guide)** — guides, API reference, and design deep-dives all live there.
+(日本語ドキュメント: [https://krileworks.com/ja/apex-stem/docs/apex-tools-guide](https://krileworks.com/ja/apex-stem/docs/apex-tools-guide))
+
+ApexTools is part of [**Apex Stem**](https://krileworks.com/apex-stem), a set of independent, dependency-free Salesforce Apex frameworks.
+
+## Installation
+
+### A) Unlocked Package (recommended)
+
+```bash
+sf package install -p 04tgK000000HaK1QAK -o <your-org> -w 10
 ```
 
-## MockHttpRequestHandler
+Or install from the browser:
 
-Two modes, routed by **labels only** — the HTTP method on each `MockResponse` is a **declared contract**, checked against the actual request when the response is served.
+- Production / Developer Edition: `https://login.salesforce.com/packaging/installPackage.apexp?p0=04tgK000000HaK1QAK`
+- Sandbox: `https://test.salesforce.com/packaging/installPackage.apexp?p0=04tgK000000HaK1QAK`
 
-### Script mode — the constructor list is the flow's script
+Current version: **v1.0.0** (`04tgK000000HaK1QAK`). Install IDs for every release are listed on the [Releases](https://github.com/krile136/ApexTools/releases) page.
 
-Reading the list top to bottom IS the expected callout sequence. A request that deviates from the script (wrong order, wrong method) fails with a detailed error instead of silently receiving the wrong response:
+Why the package: tests inside an installed unlocked package are **excluded from `RunLocalTests`**, and its code is **excluded from your org's coverage calculation** — your deploys stay fast and unaffected by this framework's test suite.
 
-```apex
-MockHttpRequestHandler mock = new MockHttpRequestHandler(new List<MockResponse>{
-  MockResponse.of('GET').respond('{"message":"not found"}', 404),   // 1st callout
-  MockResponse.of('POST').respond(createdBody, 201),                // 2nd callout
-  MockResponse.of('GET').respond(foundBody, 200)                    // 3rd callout
-});
+### B) Git Submodule
+
+```bash
+git submodule add https://github.com/krile136/ApexTools.git force-app/main/default/classes/ApexTools
+git submodule update --init --recursive
 ```
 
-### Label mode — one queue per callout site
+`sf project deploy start -d force-app/main/default/classes/ApexTools` deploys it like any source folder. A Makefile is also included for direct installs (`make install`).
 
-For multi-site and branch flows, name each callout site (mirroring `MockEloquent`). Cross-site call order does not matter; the queue within a label is that site's own sequence (e.g. retries):
+## License
 
-```apex
-// usecase:  this.http.label(LBL_EXISTS).send(req);
-MockHttpRequestHandler mock = new MockHttpRequestHandler()
-  .attach(LBL_EXISTS, MockResponse.of('GET').respond(notFound, 404))
-  .attach(LBL_CREATE, MockResponse.of('POST').respond(created, 201))
-  .attach(LBL_UPDATE, MockResponse.of('PUT').respond(updated, 200));   // the untaken branch may stay attached
-
-new KintoneUpsertUsecase(input, mock).invoke();
-
-Assert.areEqual(1, mock.sentRequestsAt(LBL_CREATE).size());   // assert which branch ran
-Assert.areEqual(0, mock.sentRequestsAt(LBL_UPDATE).size());
-```
-
-- `MockResponse.of(method)` is case-insensitive; `respond()` accepts `String` / `Map<String, Object>` / `List<Object>` / `Blob` bodies
-- **A response is consumed once.** Exhausted queues and method mismatches fail with the request, scope, and queue state — call overruns and wrong branches are caught, not hidden. A mismatch consumes nothing and records nothing
-- `.repeat()` on the **last** response of a queue makes it answer every further request (retry tests: fail once, then always succeed)
-- Once `attach()` is used, every `send()` needs a preceding `label()` (consumed per send). A typo'd label fails with the registered-label list. Without `attach()`, `label()` is ignored — labeled production code still works with a plain script mock
-- Verification helpers over `sentRequests`: `countByMethod()` / `requestsTo(endpointPart)` / `sentRequestsAt(label)` / `lastRequest()`
-
-### Binary bodies and headers
-
-`MockResponse` can carry a `Blob` body and response headers, so binary endpoints (e.g. business-card images) stay inside the DI framework instead of falling back to a raw `new Http()`:
-
-```apex
-MockHttpRequestHandler mock = new MockHttpRequestHandler(
-  MockResponse.of('GET').respond(imageBytes, 200).header('Content-Type', 'image/jpeg')
-);
-```
-
-Recommended production guard — an HTTP 200 with the wrong Content-Type usually means the wrong endpoint (a real incident: `/bizCards/{id}` was called instead of `/bizCards/{id}/image`, returning JSON that was then base64-encoded as a broken image):
-
-```apex
-this.http.label(LBL_CARD_IMAGE).send(req);
-String contentType = this.http.getHeader('Content-Type');
-if (this.http.getStatusCode() == 200 && (contentType == null || !contentType.startsWith('image/'))) {
-  throw new CalloutException('Expected an image response but got Content-Type=' + contentType);
-}
-Blob image = this.http.getBodyAsBlob();
-```
-
-`getBodyAsBlob()` falls back to `Blob.valueOf(stringBody)` for text-configured responses, and `getHeader()` is case-insensitive.
+Apache License 2.0 — see [LICENSE](LICENSE).

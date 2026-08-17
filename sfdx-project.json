@@ -1,0 +1,20 @@
+{
+  "packageDirectories": [
+    {
+      "versionName": "v1.0.0",
+      "versionNumber": "1.0.0.NEXT",
+      "path": ".",
+      "default": true,
+      "package": "ApexTools",
+      "versionDescription": ""
+    }
+  ],
+  "name": "ApexTools",
+  "namespace": "",
+  "sfdcLoginUrl": "https://login.salesforce.com",
+  "sourceApiVersion": "64.0",
+  "packageAliases": {
+    "ApexTools": "0HogK0000004CCHSA2",
+    "ApexTools@1.0.0-1": "04tgK000000HaK1QAK"
+  }
+}
