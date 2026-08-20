@@ -1,3 +1,6 @@
+/**
+ * @directory ApexTools/HttpRequest
+ */
 public interface IHttpRequestHandler {
   /**
    * Names the purpose of the next send() (e.g. 'kintoneExists'). Production

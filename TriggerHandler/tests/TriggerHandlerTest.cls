@@ -1,3 +1,6 @@
+/**
+ * @directory ApexTools/TriggerHandler/tests
+ */
 @isTest
 public with sharing class TriggerHandlerTest {
   private class TestTriggerHandler extends TriggerHandler {

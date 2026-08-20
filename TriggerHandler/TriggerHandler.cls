@@ -1,3 +1,6 @@
+/**
+ * @directory ApexTools/TriggerHandler
+ */
 public virtual class TriggerHandler {
   @TestVisible
   private TriggerOperation triggerContext;

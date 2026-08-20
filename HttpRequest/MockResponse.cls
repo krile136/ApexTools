@@ -10,6 +10,7 @@
  *
  * The method name is normalized to lowercase internally, so 'GET' / 'get' / 'Get'
  * all declare (and match) the same method.
+ * @directory ApexTools/HttpRequest
  */
 public with sharing class MockResponse {
   private String method;

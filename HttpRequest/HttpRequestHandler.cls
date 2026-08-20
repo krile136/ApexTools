@@ -1,3 +1,6 @@
+/**
+ * @directory ApexTools/HttpRequest
+ */
 public with sharing class HttpRequestHandler implements IHttpRequestHandler {
   private HttpResponse currentHttpResponse;
 
