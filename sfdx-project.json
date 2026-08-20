@@ -15,6 +15,7 @@
   "sourceApiVersion": "64.0",
   "packageAliases": {
     "ApexTools": "0HogK0000004CCHSA2",
-    "ApexTools@1.0.0-1": "04tgK000000HaK1QAK"
+    "ApexTools@1.0.0-1": "04tgK000000HaK1QAK",
+    "ApexTools@1.1.0-1": "04tgK000000HuCHQA0"
   }
 }
