@@ -1,5 +1,6 @@
 /**
  * @description Test class for MockHttpRequestHandler
+ * @directory ApexTools/HttpRequest/tests
  */
 @IsTest
 private class MockHttpRequestHandlerTest {

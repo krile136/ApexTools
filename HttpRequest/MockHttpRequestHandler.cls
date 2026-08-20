@@ -36,6 +36,7 @@
  * Once attach() is used, every send() must be preceded by label() (the label
  * is consumed per send). Without attach(), label() calls are ignored, so
  * labeled production code can still be tested with a plain script mock.
+ * @directory ApexTools/HttpRequest
  */
 public with sharing class MockHttpRequestHandler implements IHttpRequestHandler {
   @TestVisible

@@ -1,3 +1,6 @@
+/**
+ * @directory ApexTools/HttpRequest/tests
+ */
 @isTest
 public with sharing class HttpRequestHandlerTest {
   @isTest
