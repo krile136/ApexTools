@@ -196,4 +196,74 @@ public with sharing class TriggerHandlerTest {
     // Assert
     Assert.areEqual(0, changedIds.size());
   }
+
+  @isTest
+  static void testGetUpdatedRecordsWithChangedField_WhenOnlyCaseChanged_ThenReturnRecords() {
+    // Arrange: Apex's String != ignores case, so 'acme' -> 'ACME' used to read as unchanged (issue #4)
+    Account oldAccount = new Account(Id = '001000000000001', Name = 'acme');
+    Account newAccount = new Account(Id = '001000000000001', Name = 'ACME');
+
+    TestTriggerHandler handler = new TestTriggerHandler();
+    handler.newRecords = new List<SObject>{ newAccount };
+    handler.oldRecordsMap = new Map<Id, SObject>{ oldAccount.Id => oldAccount };
+
+    // Act
+    List<SObject> changedRecords = handler.getUpdatedRecordsWithChangedField(Account.Name);
+    Set<Id> changedIds = handler.getUpdateRecordIdsWithChangedField(Account.Name);
+
+    // Assert
+    Assert.areEqual(1, changedRecords.size());
+    Assert.isTrue(changedIds.contains(newAccount.Id));
+  }
+
+  @isTest
+  static void testGetUpdatedRecordsWithChangedField_WhenOnlyIdLengthDiffers_ThenNotChanged() {
+    // Arrange: a 15- and an 18-character form of the same Id stay equal (both are read back as 18 characters)
+    Account oldAccount = new Account(Id = '001000000000001', ParentId = '001000000000002');
+    Account newAccount = new Account(Id = '001000000000001', ParentId = '001000000000002AAA');
+
+    TestTriggerHandler handler = new TestTriggerHandler();
+    handler.newRecords = new List<SObject>{ newAccount };
+    handler.oldRecordsMap = new Map<Id, SObject>{ oldAccount.Id => oldAccount };
+
+    // Act
+    List<SObject> changedRecords = handler.getUpdatedRecordsWithChangedField(Account.ParentId);
+
+    // Assert
+    Assert.areEqual(0, changedRecords.size());
+  }
+
+  @isTest
+  static void testGetUpdatedRecordsWithChangedField_WhenValueBecomesNull_ThenReturnRecords() {
+    // Arrange
+    Account oldAccount = new Account(Id = '001000000000001', Description = 'x');
+    Account newAccount = new Account(Id = '001000000000001', Description = null);
+
+    TestTriggerHandler handler = new TestTriggerHandler();
+    handler.newRecords = new List<SObject>{ newAccount };
+    handler.oldRecordsMap = new Map<Id, SObject>{ oldAccount.Id => oldAccount };
+
+    // Act
+    List<SObject> changedRecords = handler.getUpdatedRecordsWithChangedField(Account.Description);
+
+    // Assert
+    Assert.areEqual(1, changedRecords.size());
+  }
+
+  @isTest
+  static void testGetUpdatedRecordsWithChangedField_WhenIdShapedTextChangesCase_ThenReturnRecords() {
+    // Arrange: a Text value shaped like an Id is `instanceof Id`, and `!=` would ignore its case
+    Account oldAccount = new Account(Id = '001000000000001', AccountNumber = '001000000000002AAA');
+    Account newAccount = new Account(Id = '001000000000001', AccountNumber = '001000000000002aaa');
+
+    TestTriggerHandler handler = new TestTriggerHandler();
+    handler.newRecords = new List<SObject>{ newAccount };
+    handler.oldRecordsMap = new Map<Id, SObject>{ oldAccount.Id => oldAccount };
+
+    // Act
+    List<SObject> changedRecords = handler.getUpdatedRecordsWithChangedField(Account.AccountNumber);
+
+    // Assert
+    Assert.areEqual(1, changedRecords.size());
+  }
 }
