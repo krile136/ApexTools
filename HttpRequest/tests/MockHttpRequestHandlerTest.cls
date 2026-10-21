@@ -456,7 +456,7 @@ private class MockHttpRequestHandlerTest {
       mock.getBody();
       Assert.fail('Exception should be thrown');
     } catch (JSONException e) {
-      Assert.isTrue(e.getMessage().contains('Ensure send() has been called'), e.getMessage());
+      Assert.isTrue(e.getMessage().contains('send() has not been called'), e.getMessage());
     }
   }
 
@@ -584,5 +584,66 @@ private class MockHttpRequestHandlerTest {
 
     // Act & Assert
     Assert.isNull(mock.lastRequest());
+  }
+
+  @isTest
+  static void testSend_WhenResponseIsAFailure_ThenThrowsAndLeavesNoResponse() {
+    // Arrange
+    MockHttpRequestHandler mock = new MockHttpRequestHandler(
+      new List<MockResponse>{
+        MockResponse.of('GET').respond('{"ok":true}', 200),
+        MockResponse.of('GET').fail('Read timed out'),
+        MockResponse.of('GET').respond('{"ok":true}', 200)
+      }
+    );
+    HttpRequest request = new HttpRequest();
+    request.setEndpoint('https://api.example.com/items');
+    request.setMethod('GET');
+    mock.send(request);
+
+    // Act
+    try {
+      mock.send(request);
+      Assert.fail('A fail() response must throw');
+    } catch (CalloutException e) {
+      Assert.areEqual('Read timed out', e.getMessage());
+    }
+
+    // Assert: no response is left behind, the request was recorded, and the script moves on
+    try {
+      mock.getStatusCode();
+      Assert.fail('No response may be readable after a failed send');
+    } catch (JSONException e) {
+      Assert.isTrue(e.getMessage().contains('the last send() failed'), e.getMessage());
+    }
+    Assert.areEqual(2, mock.countByMethod('GET'));
+    mock.send(request);
+    Assert.areEqual(200, mock.getStatusCode());
+  }
+
+  @isTest
+  static void testFail_WhenMessageIsBlank_ThenThrows() {
+    try {
+      MockResponse.of('GET').fail(' ');
+      Assert.fail('A blank failure message must be refused');
+    } catch (IllegalArgumentException e) {
+      Assert.isTrue(e.getMessage().contains('Failure message cannot be blank'), e.getMessage());
+    }
+  }
+
+  @isTest
+  static void testFail_WhenCombinedWithRespond_ThenThrowsEitherWay() {
+    try {
+      MockResponse.of('GET').respond('{}', 200).fail('x');
+      Assert.fail('respond() then fail() must be refused');
+    } catch (IllegalArgumentException e) {
+      Assert.isTrue(e.getMessage().contains('a rule either answers or fails'), e.getMessage());
+    }
+    try {
+      MockResponse.of('GET').fail('x').respond('{}', 200);
+      Assert.fail('fail() then respond() must be refused');
+    } catch (IllegalArgumentException e) {
+      Assert.isTrue(e.getMessage().contains('a rule either answers or fails'), e.getMessage());
+    }
   }
 }

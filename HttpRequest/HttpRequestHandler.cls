@@ -18,7 +18,15 @@ public with sharing class HttpRequestHandler implements IHttpRequestHandler {
     return this;
   }
 
+  /**
+   * @description Sends the request. The previous response is cleared first, so after a
+   * send() that throws (CalloutException), the getters return null instead of the previous
+   * response (issue #5: a failure used to read as the previous 200).
+   *
+   * @param request The request to send.
+   */
   public void send(HttpRequest request) {
+    this.currentHttpResponse = null;
     Http http = new Http();
     HttpResponse response = http.send(request);
 

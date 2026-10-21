@@ -19,6 +19,7 @@ public with sharing class MockResponse {
   private Integer statusCode;
   private Map<String, String> headers = new Map<String, String>();
   private Boolean repeating = false;
+  private String failureMessage;
 
   /**
    * @description Private constructor to enforce creation via the `of` factory method.
@@ -53,6 +54,7 @@ public with sharing class MockResponse {
     if (statusCode == null) {
       throw new IllegalArgumentException('StatusCode cannot be null');
     }
+    this.refuseIfFailure();
     this.body = body;
     this.statusCode = statusCode;
     return this;
@@ -73,6 +75,7 @@ public with sharing class MockResponse {
     if (statusCode == null) {
       throw new IllegalArgumentException('StatusCode cannot be null');
     }
+    this.refuseIfFailure();
     this.bodyBlob = body;
     this.statusCode = statusCode;
     return this;
@@ -123,6 +126,25 @@ public with sharing class MockResponse {
   }
 
   /**
+   * @description Makes this rule a failed send: send() throws a CalloutException with
+   * this message (a timeout, an unreachable host, an unauthorized endpoint), and no
+   * response is available afterwards, as with HttpRequestHandler.
+   *
+   * @param message The CalloutException message.
+   * @return This MockResponse (for chaining).
+   */
+  public MockResponse fail(String message) {
+    if (String.isBlank(message)) {
+      throw new IllegalArgumentException('Failure message cannot be blank');
+    }
+    if (this.statusCode != null) {
+      throw new IllegalArgumentException('fail() cannot be combined with respond(): a rule either answers or fails');
+    }
+    this.failureMessage = message;
+    return this;
+  }
+
+  /**
    * @description Marks this response as repeating: once reached, it answers every
    * further request of its method instead of being consumed. Must be the last
    * response declared for its method.
@@ -132,6 +154,16 @@ public with sharing class MockResponse {
   public MockResponse repeat() {
     this.repeating = true;
     return this;
+  }
+
+  /**
+   * @description Refuses respond() on a rule already made a failure by fail(). Without this
+   * the two would combine silently and the failure would win, hiding a mistake in the test.
+   */
+  private void refuseIfFailure() {
+    if (this.failureMessage != null) {
+      throw new IllegalArgumentException('respond() cannot be combined with fail(): a rule either answers or fails');
+    }
   }
 
   public String getMethod() {
@@ -182,16 +214,25 @@ public with sharing class MockResponse {
     return this.statusCode;
   }
 
+  /**
+   * @description The CalloutException message when this rule is a failed send, otherwise null.
+   *
+   * @return The failure message, or null.
+   */
+  public String getFailureMessage() {
+    return this.failureMessage;
+  }
+
   public Boolean isRepeating() {
     return this.repeating;
   }
 
   /**
-   * @description Whether respond() has been called (a rule without content is invalid).
+   * @description Whether respond() or fail() has been called (a rule without content is invalid).
    *
    * @return True when the response content is configured.
    */
   public Boolean isConfigured() {
-    return this.statusCode != null;
+    return this.statusCode != null || this.failureMessage != null;
   }
 }
