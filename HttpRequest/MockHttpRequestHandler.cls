@@ -198,33 +198,38 @@ public with sharing class MockHttpRequestHandler implements IHttpRequestHandler 
     queue.advance();
     this.sentRequests.add(request);
     this.sentLabels.add(consumedLabel);
+    if (nextResponse.getFailureMessage() != null) {
+      // Same as HttpRequestHandler: a failed send leaves no response behind.
+      this.currentMockResponse = null;
+      throw new CalloutException(nextResponse.getFailureMessage());
+    }
     this.currentMockResponse = nextResponse;
   }
 
   public String getBody() {
     if (this.currentMockResponse == null) {
-      throw new JSONException('No response available. Ensure send() has been called.');
+      throw new JSONException('No response available: send() has not been called, or the last send() failed.');
     }
     return this.currentMockResponse.getBody();
   }
 
   public Blob getBodyAsBlob() {
     if (this.currentMockResponse == null) {
-      throw new JSONException('No response available. Ensure send() has been called.');
+      throw new JSONException('No response available: send() has not been called, or the last send() failed.');
     }
     return this.currentMockResponse.getBodyAsBlob();
   }
 
   public Integer getStatusCode() {
     if (this.currentMockResponse == null) {
-      throw new JSONException('No response available. Ensure send() has been called.');
+      throw new JSONException('No response available: send() has not been called, or the last send() failed.');
     }
     return this.currentMockResponse.getStatusCode();
   }
 
   public String getHeader(String name) {
     if (this.currentMockResponse == null) {
-      throw new JSONException('No response available. Ensure send() has been called.');
+      throw new JSONException('No response available: send() has not been called, or the last send() failed.');
     }
     return this.currentMockResponse.getHeader(name);
   }
@@ -309,7 +314,7 @@ public with sharing class MockHttpRequestHandler implements IHttpRequestHandler 
     }
     if (!response.isConfigured()) {
       throw new IllegalArgumentException(
-        'MockResponse for method \'' + response.getMethod() + '\' has no content. Call respond(...) before registering.'
+        'MockResponse for method \'' + response.getMethod() + '\' has no content. Call respond(...) or fail(...) before registering.'
       );
     }
     queue.add(response);
