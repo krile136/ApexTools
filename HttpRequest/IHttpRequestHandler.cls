@@ -3,7 +3,7 @@
  */
 public interface IHttpRequestHandler {
   /**
-   * Names the purpose of the next send() (e.g. 'kintoneExists'). Production
+   * Names the purpose of the next send() (e.g. 'contactExists'). Production
    * implementations ignore it; MockHttpRequestHandler uses it to route the
    * request to the responses attached under the same label.
    */
