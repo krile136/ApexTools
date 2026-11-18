@@ -1,8 +1,8 @@
 {
   "packageDirectories": [
     {
-      "versionName": "v1.2.0",
-      "versionNumber": "1.2.0.NEXT",
+      "versionName": "v1.2.1",
+      "versionNumber": "1.2.1.NEXT",
       "path": ".",
       "default": true,
       "package": "ApexTools",
@@ -17,6 +17,7 @@
     "ApexTools": "0HogK0000004CCHSA2",
     "ApexTools@1.0.0-1": "04tgK000000HaK1QAK",
     "ApexTools@1.1.0-1": "04tgK000000HuCHQA0",
-    "ApexTools@1.2.0-1": "04tgK000000V3xhQAC"
+    "ApexTools@1.2.0-1": "04tgK000000V3xhQAC",
+    "ApexTools@1.2.1-1": "04tgK000000b1YDQAY"
   }
 }

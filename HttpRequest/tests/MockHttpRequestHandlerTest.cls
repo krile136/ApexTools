@@ -473,7 +473,7 @@ private class MockHttpRequestHandlerTest {
     );
 
     // Act
-    mock.send(buildRequest('GET', 'https://api.sansan.com/v1/bizCards/xxx/image'));
+    mock.send(buildRequest('GET', 'https://api.example.com/v1/contacts/xxx/photo'));
 
     // Assert
     Assert.areEqual(
@@ -516,14 +516,14 @@ private class MockHttpRequestHandlerTest {
 
   @IsTest
   static void testContentTypeGuard_WhenWrongEndpoint_ThenGuardCatchesIt() {
-    // Arrange - reproduces a real incident: a wrong URL returns JSON where an image was expected.
+    // Arrange - a wrong URL returns JSON where an image was expected.
     // A Content-Type guard catches it despite the HTTP 200, before a broken image reaches the UI
     MockHttpRequestHandler mock = new MockHttpRequestHandler(
-      MockResponse.of('GET').respond('{"bizCardId":"xxx"}', 200).header('Content-Type', 'application/json')
+      MockResponse.of('GET').respond('{"contactId":"xxx"}', 200).header('Content-Type', 'application/json')
     );
 
     // Act
-    mock.send(buildRequest('GET', 'https://api.sansan.com/v1/bizCards/xxx'));
+    mock.send(buildRequest('GET', 'https://api.example.com/v1/contacts/xxx'));
 
     // Assert - the guard condition itself is verifiable inside the mock framework
     Assert.areEqual(200, mock.getStatusCode());
@@ -545,16 +545,16 @@ private class MockHttpRequestHandlerTest {
     });
 
     // Act
-    mock.send(buildRequest('GET', 'https://example.com/k/v1/records.json'));
-    mock.send(buildRequest('POST', 'https://example.com/k/v1/records.json'));
-    mock.send(buildRequest('GET', 'https://example.com/k/v1/files.json'));
+    mock.send(buildRequest('GET', 'https://example.com/api/v1/records.json'));
+    mock.send(buildRequest('POST', 'https://example.com/api/v1/records.json'));
+    mock.send(buildRequest('GET', 'https://example.com/api/v1/files.json'));
 
     // Assert
     Assert.areEqual(2, mock.countByMethod('GET'));
     Assert.areEqual(1, mock.countByMethod('post'));
     Assert.areEqual(0, mock.countByMethod('PUT'));
     Assert.areEqual(2, mock.requestsTo('/records.json').size());
-    Assert.areEqual('https://example.com/k/v1/files.json', mock.lastRequest().getEndpoint());
+    Assert.areEqual('https://example.com/api/v1/files.json', mock.lastRequest().getEndpoint());
   }
 
   @IsTest
